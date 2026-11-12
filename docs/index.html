@@ -178,6 +178,7 @@ cd "$(brew --prefix)/opt/backup-gate/libexec"
 ./install.sh --check      <span class="t-dim"># preflight: no changes, no sudo</span>
 sudo ./install.sh         <span class="t-dim"># install, then approve your Mac's current state</span></code></pre>
 <p>Read <a href="https://github.com/mermoddity/backup-gate#install">the full instructions</a> first, including how to install from a verified release without Homebrew.</p>
+<p><strong>Not comfortable with Terminal?</strong> A Mac app version, with no Terminal and one-click approvals, is being considered. If you'd use it, <a href="https://github.com/mermoddity/backup-gate/discussions/1">say so here</a>.</p>
 
 <h2>What it doesn't do</h2>
 <p>backup-gate keeps your backups clean; it doesn't remove malware from your Mac. It only watches the places where programs are set up to run, so malware files that aren't set up to run there are backed up like any other file, malware that runs once and leaves nothing behind doesn't trigger it, and neither does ransomware changing your documents. Malware that already has root can turn it off. Backups wait for you: if you ignore the notifications, they go stale (you're warned after 48 hours). <a href="https://github.com/mermoddity/backup-gate#limits">All the limits.</a></p>

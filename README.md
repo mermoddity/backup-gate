@@ -28,6 +28,9 @@ infostealer as a launch agent named `com.Apple.xkscqmbapqwbhbet`. I caught it at
 last backup was clean, but only by luck: the next hourly backup would have copied it in.
 [The full story](https://mermoddity.github.io/backup-gate/time-machine-malware.html).
 
+**Not comfortable with Terminal?** A Mac app version (no Terminal, one-click approvals) is being
+considered. If you'd use it, [say so here](https://github.com/mermoddity/backup-gate/discussions/1).
+
 ```
 $ sudo /usr/local/sbin/backup-gate approve
 3 change(s) since the last approval (2026-11-10 13:48).

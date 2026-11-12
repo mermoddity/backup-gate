@@ -3,7 +3,7 @@
 Every update changes the gate's own files, so after upgrading, `approve` lists them as
 changes to accept. This file says what you are approving.
 
-## 3.2.0 (unreleased)
+## 3.2.0 (2026-11-12)
 
 - Releases on GitHub: a source tarball with its SHA-256 and a signed build provenance
   attestation, so you can check that what you download was built from this repository.

@@ -1,5 +1,5 @@
 # Homebrew formula for backup-gate. The release workflow fills in @VERSION@ and @SHA256@ and
-# attaches the result to the GitHub release; copy it to Formula/ in mermoddity/homebrew-tap.
+# attaches the result to the GitHub release; copy it to Formula/ in mermoddity/homebrew-backup-gate.
 class BackupGate < Formula
   desc "Time Machine backups that pause when macOS persistence points change"
   homepage "https://github.com/mermoddity/backup-gate"

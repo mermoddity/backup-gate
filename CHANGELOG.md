@@ -7,7 +7,7 @@ changes to accept. This file says what you are approving.
 
 - Releases on GitHub: a source tarball with its SHA-256 and a signed build provenance
   attestation, so you can check that what you download was built from this repository.
-- Homebrew: `brew install mermoddity/tap/backup-gate`. Homebrew only downloads the files;
+- Homebrew: `brew install mermoddity/backup-gate/backup-gate`. Homebrew only downloads the files;
   `sudo …/install.sh` installs the root-owned copy, as before.
 - `status` says when Homebrew has downloaded a newer version that isn't installed yet. It reads
   only the version number from Homebrew's folder (a regular file, at most 64 KB), suggests no

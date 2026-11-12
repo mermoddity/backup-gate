@@ -89,7 +89,7 @@ Some problems always block, and `approve` refuses to accept them:
 2. Get the files, with Homebrew or from a release:
 
    ```sh
-   brew install mermoddity/tap/backup-gate
+   brew install mermoddity/backup-gate/backup-gate
    cd "$(brew --prefix)/opt/backup-gate/libexec"
    ```
 

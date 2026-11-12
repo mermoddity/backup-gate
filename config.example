@@ -1,0 +1,18 @@
+# backup-gate config (root-owned). Parsed line by line, never sourced.
+# Values may only contain letters, digits, '.', '_' and '-'.
+
+# Time Machine destination ID (tmutil destinationinfo) and its APFS volume UUID (diskutil info).
+# install.sh fills these in.
+DEST_ID=__DEST_ID__
+DEST_VOLUME=__DEST_VOLUME__
+
+# Back up when the last successful backup is older than this many hours.
+# The daemon checks every 30 minutes and skips while the screen is locked.
+MIN_HOURS=4
+
+# Notify when the last successful backup is older than this many hours.
+STALE_HOURS=48
+
+# 1 = unmount the destination after each backup. Leave 0 for an encrypted destination:
+# Time Machine can't unlock it again by itself.
+UNMOUNT_AFTER=0

@@ -1,0 +1,15 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax
+        run: for f in backup-gate install.sh uninstall.sh tests/run.sh; do bash -n "$f"; done
+      - name: Plist
+        run: plutil -lint local.backup-gate.plist
+      - name: ShellCheck
+        run: brew install shellcheck && shellcheck -S error backup-gate install.sh uninstall.sh tests/run.sh
+      - name: Tests
+        run: bash tests/run.sh

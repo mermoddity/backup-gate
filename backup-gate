@@ -1,0 +1,317 @@
+#!/bin/bash
+# backup-gate: start Time Machine only when the machine's persistence points
+# (launch items, login items, cron, shell rc, sudo/pam, helpers, profiles...)
+# match an allowlist you approved. Anything else pauses backups until
+# `sudo backup-gate approve`, so an infection can't age out the clean backups.
+# https://github.com/mermoddity/backup-gate (MIT license)
+#
+#   backup-gate run        (LaunchDaemon, every 30 min) when a backup is due (MIN_HOURS)
+#                          and the screen is unlocked: check, then back up if clean
+#   backup-gate run now    same, but ignore MIN_HOURS (manual run)
+#   backup-gate approve    (sudo, interactive) review changes and accept them
+#   backup-gate inventory  (sudo) refresh the current inventory, no backup
+#   backup-gate status     show last backup, problems and pending changes
+#   backup-gate version
+set -u
+umask 022
+VERSION=3.0.0
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH LC_ALL=C
+
+SELF=/usr/local/sbin/backup-gate
+ETC=/usr/local/etc/backup-gate
+CONFIG=$ETC/config
+ALLOW=$ETC/allowlist
+STATE=/var/db/backup-gate
+LOG=/var/log/backup-gate.log
+PLIST=/Library/LaunchDaemons/local.backup-gate.plist
+LOCK=/var/run/backup-gate.lock
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
+die() { echo "backup-gate: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "must run as root: sudo backup-gate $1"; }
+
+# The config is parsed, never sourced, so it can't run code.
+cfg() { sed -n "s/^$1=\([A-Za-z0-9._-]*\)\$/\1/p" "$CONFIG" 2>/dev/null | head -n 1; }
+
+hash_file() {
+  if [ -f "$1" ]; then shasum -a 256 < "$1" | cut -c1-64
+  elif [ -e "$1" ]; then echo NOT-A-FILE
+  else echo ABSENT; fi
+}
+hash_text() { shasum -a 256 | cut -c1-64; }
+
+# Only fixed text and numbers go into the notification. Item names are
+# attacker-controlled and are never passed to osascript.
+notify() {
+  local user uid
+  user=$(stat -f %Su /dev/console)
+  [ -n "$user" ] && [ "$user" != root ] || return 0
+  uid=$(id -u "$user") || return 0
+  launchctl asuser "$uid" sudo -u "$user" osascript \
+    -e "display notification \"$1\" with title \"Backup gate\" sound name \"Basso\"" >> "$LOG" 2>&1 \
+    || log "notification failed (exit $?)"
+}
+
+homes() {
+  echo /var/root
+  dscl . -list /Users UniqueID | while read -r name uid; do
+    [ "$uid" -ge 501 ] 2>/dev/null || continue
+    dscl . -read "/Users/$name" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //'
+  done
+}
+
+list_dir() {  # kind dir: one line per entry, with owner:group:mode and hash
+  [ -d "$2" ] || return 0
+  find "$2" -mindepth 1 -maxdepth 1 | while read -r f; do
+    printf '%s\t%s\t%s\t%s\n' "$1" "$f" "$(stat -f '%Su:%Sg:%Lp' "$f")" "$(hash_file "$f")"
+  done
+}
+
+inventory() {
+  local h f d n
+  {
+    # launchd jobs and startup items, system-wide and per user
+    for d in /Library/LaunchAgents /Library/LaunchDaemons /Library/StartupItems; do list_dir launch "$d"; done
+    homes | while read -r h; do list_dir launch "$h/Library/LaunchAgents"; done
+
+    # shell startup files and ssh entry points, per user
+    homes | while read -r h; do
+      for f in .zshenv .zprofile .zshrc .zlogin .zlogout .bash_profile .bash_login .bashrc .profile \
+               .ssh/authorized_keys .ssh/config .ssh/environment .ssh/rc; do
+        printf 'shell\t%s/%s\t%s\n' "$h" "$f" "$(hash_file "$h/$f")"
+      done
+    done
+
+    # system config that can run code or grant root
+    for f in /etc/zshenv /etc/zprofile /etc/zshrc /etc/zlogin /etc/profile /etc/bashrc /etc/paths \
+             /etc/hosts /etc/sudoers /etc/pam.d/sudo /etc/pam.d/sudo_local /etc/crontab /etc/launchd.conf \
+             /etc/rc.common /etc/ssh/sshd_config "$SELF" "$CONFIG"; do
+      printf 'system\t%s\t%s\n' "$f" "$(hash_file "$f")"
+    done
+    for d in /etc/paths.d /etc/sudoers.d /etc/ssh/sshd_config.d /var/at/tabs /var/at/jobs \
+             /etc/periodic/daily /etc/periodic/weekly /etc/periodic/monthly \
+             /Library/PrivilegedHelperTools /Library/Extensions /Library/Security/SecurityAgentPlugins \
+             /Library/ScriptingAdditions; do
+      list_dir system "$d"
+    done
+
+    # login/logout hooks
+    for f in /Library/Preferences/com.apple.loginwindow /var/root/Library/Preferences/com.apple.loginwindow; do
+      for n in LoginHook LogoutHook; do
+        printf 'hook\t%s:%s\t%s\n' "$f" "$n" "$(defaults read "$f" "$n" 2>/dev/null || echo none)"
+      done
+    done
+
+    # configuration profiles and system extensions (kept as text, so the diff is readable)
+    profiles list -all 2>&1 | sed 's/^/cmd\tprofiles\t/'
+    systemextensionsctl list 2>&1 | sed 's/^/cmd\tsysext\t/'
+
+    # login items and background items known to macOS (Background Task Management)
+    n=$(sfltool dumpbtm 2>/dev/null | awk '
+      function flush() { if (id != "" || url != "" || exe != "") { printf "btm\t%s\t%s|%s|%s|%s\n", uid, type, id, url, exe; c++ }
+                         type = id = url = exe = "" }
+      /^ *Records for UID/ { flush(); uid = $0; sub(/^ *Records for UID */, "", uid); sub(/ *:.*$/, "", uid); next }
+      /^ *#[0-9]+:/        { flush(); next }
+      { line = $0; sub(/^ +/, "", line) }
+      line ~ /^Type:/            { sub(/^Type: */, "", line); type = line }
+      line ~ /^Identifier:/      { sub(/^Identifier: */, "", line); id = line }
+      line ~ /^URL:/             { sub(/^URL: */, "", line); url = line }
+      line ~ /^Executable Path:/ { sub(/^Executable Path: */, "", line); exe = line }
+      END { flush(); print c + 0 > "/dev/stderr" }' 2>&1 >&3)
+    [ "${n:-0}" -gt 0 ] || printf 'error\tbtm\tsfltool dumpbtm gave no records\n'
+  } 3>&1 | sort -u
+}
+
+flags() {  # problems that block backups and can't simply be approved
+  grep -E 'com\.Apple\.' "$1" | sed 's/^/IMPERSONATES APPLE: /'
+  grep -E '^error' "$1" | sed 's/^/INVENTORY ERROR: /'
+  awk -F'\t' '$1 == "launch" && $2 ~ /^\/Library\// && $3 !~ /^root:wheel:/ { print "NOT ROOT-OWNED: " $2 }' "$1"
+}
+
+writable() {  # group or other write bit set
+  local m; m=$(stat -f %Lp "$1")
+  case "${m: -2:1}${m: -1}" in *[2367]*) return 0;; esac
+  return 1
+}
+
+selfcheck() {  # the gate's own files must be root-owned and not writable by others
+  local p
+  for p in /usr/local /usr/local/sbin "$SELF" "$ETC" "$CONFIG" "$PLIST" "$STATE" "$ALLOW"; do
+    if [ ! -e "$p" ]; then
+      [ "$p" = "$ALLOW" ] || echo "GATE FILE MISSING: $p"
+      continue
+    fi
+    [ "$(stat -f %Su:%Sg "$p")" = root:wheel ] || echo "GATE FILE NOT root:wheel: $p"
+    writable "$p" && echo "GATE FILE WRITABLE BY OTHERS: $p"
+  done
+}
+
+refresh() {  # write the current inventory and problems to $STATE
+  inventory > "$STATE/current.tmp" && mv "$STATE/current.tmp" "$STATE/current"
+  { selfcheck; flags "$STATE/current"; } > "$STATE/flags"
+}
+
+check_stale() {
+  local last hrs max
+  last=$(cat "$STATE/last-success" 2>/dev/null || echo 0)
+  hrs=$(( ($(date +%s) - last) / 3600 ))
+  max=$(cfg STALE_HOURS); max=${max:-48}
+  [ "$hrs" -lt "$max" ] || notify "No successful backup for $hrs hours."
+}
+
+exclusions() {  # sticky TM exclusions for dependency folders (they reappear often)
+  local h
+  homes | while read -r h; do
+    [ "$h" != /var/root ] && [ -d "$h" ] || continue
+    # Library and the privacy-protected folders are skipped (a daemon has no access to them)
+    find -x "$h" \( -path "$h/Library" -o -path "$h/Desktop" -o -path "$h/Documents" -o -path "$h/Downloads" \
+                    -o -path "$h/Pictures" -o -path "$h/Movies" -o -path "$h/Music" -o -path "$h/.Trash" \) -prune \
+         -o \( -name node_modules -o -name .venv \) -type d -prune -print 2>/dev/null |
+    while read -r d; do
+      tmutil isexcluded "$d" | grep -q '^\[Excluded\]' || tmutil addexclusion "$d"
+    done
+  done
+}
+
+mounted() { diskutil info "$1" 2>/dev/null | grep -q 'Mounted: *Yes'; }
+
+# Time Machine refuses to finish while the screen is locked (BACKUP_FAILED_DEVICE_LOCKED).
+# Locked = no user on the console, or the console session reports a locked screen.
+screen_locked() {
+  local users
+  users=$(ioreg -n Root -d1 | grep '"IOConsoleUsers"')
+  echo "$users" | grep -q '"kCGSSessionOnConsoleKey"=Yes' || return 0
+  echo "$users" | grep -q '"CGSSessionScreenIsLocked"=Yes'
+}
+
+# Newest completed backup = newest TM snapshot on the destination volume.
+# (tmutil latestbackup returns nothing when run from launchd, so don't use it.)
+latest_snapshot() {
+  diskutil apfs listSnapshots "$1" 2>/dev/null |
+    sed -n 's/.*Name: *com\.apple\.TimeMachine\.\([0-9-]*\)\.backup$/\1/p' | sort | tail -n 1
+}
+
+backup_due() {
+  local last min
+  last=$(cat "$STATE/last-success" 2>/dev/null || echo 0)
+  min=$(cfg MIN_HOURS); min=${min:-4}
+  [ $(( $(date +%s) - last )) -ge $(( min * 3600 )) ]
+}
+
+backup() {
+  local dest vol rc before after
+  dest=$(cfg DEST_ID); vol=$(cfg DEST_VOLUME)
+  [ -n "$dest" ] && [ -n "$vol" ] || { log "config needs DEST_ID and DEST_VOLUME"; exit 1; }
+  # tmutil reports success even when the destination is missing, so check it ourselves
+  mounted "$vol" || diskutil mount "$vol" >> "$LOG" 2>&1
+  if ! mounted "$vol"; then
+    log "backup skipped: destination volume $vol not mounted (disk absent or locked)"
+    check_stale
+    return
+  fi
+  before=$(latest_snapshot "$vol")
+  log "starting backup to $dest"
+  tmutil startbackup --block --destination "$dest" >> "$LOG" 2>&1; rc=$?
+  after=$(latest_snapshot "$vol")
+  # tmutil exits 0 even when the backup fails, so success = a new completed snapshot
+  if [ "$rc" -eq 0 ] && { [ -z "$after" ] || [ "$after" = "$before" ]; }; then
+    log "tmutil exited $rc but no new completed backup appeared (latest: ${after:-none})"
+    screen_locked && log "screen was locked at the end of the run"
+    rc=1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    date +%s > "$STATE/last-success"
+    log "backup finished ($after)"
+    if [ "$(cfg UNMOUNT_AFTER)" = 1 ] && [ -n "$vol" ]; then
+      diskutil unmount "$vol" >> "$LOG" 2>&1 || log "unmount failed"
+    fi
+  else
+    log "backup failed (tmutil exit $rc)"
+    check_stale
+  fi
+}
+
+run() {
+  need_root run
+  mkdir "$LOCK" 2>/dev/null || { log "skipped: another run is in progress"; exit 0; }
+  trap 'rmdir "$LOCK"' EXIT
+  # Cheap checks first: most runs (every 30 min) stop here without writing anything.
+  if [ "${1:-}" != now ] && ! backup_due; then exit 0; fi
+  if screen_locked; then
+    # log only the first skip in a row, so the log doesn't fill up overnight
+    tail -n 1 "$LOG" 2>/dev/null | grep -q 'skipped: screen locked' || log "skipped: screen locked (backup due, will retry)"
+    exit 0
+  fi
+  if tmutil status | grep -q 'Running = 1'; then log "skipped: Time Machine is already running"; exit 0; fi
+
+  refresh
+  if [ ! -f "$ALLOW" ]; then
+    log "BLOCKED: no approved baseline (run: sudo backup-gate approve)"
+    notify "No approved baseline yet. Backups are paused."
+    exit 2
+  fi
+  diff "$ALLOW" "$STATE/current" > "$STATE/pending.diff"
+  if [ -s "$STATE/flags" ]; then
+    log "BLOCKED: $(wc -l < "$STATE/flags" | tr -d ' ') problem(s), see backup-gate status"
+    notify "ALERT: suspicious item or gate tampering. Backups blocked. Run: backup-gate status"
+    check_stale
+    exit 3
+  fi
+  if [ -s "$STATE/pending.diff" ]; then
+    local n; n=$(grep -c '^[<>]' "$STATE/pending.diff")
+    log "BLOCKED: $n line(s) changed since the last approval"
+    notify "$n change(s) since the last approval. Backups paused until: sudo backup-gate approve"
+    check_stale
+    exit 3
+  fi
+  rm -f "$STATE/pending.diff"
+  exclusions
+  backup
+}
+
+approve() {
+  need_root approve
+  [ -t 0 ] || die "approve needs an interactive Terminal"
+  refresh
+  if [ -s "$STATE/flags" ]; then
+    cat "$STATE/flags"
+    die "refusing to approve while these problems exist. Remove the item or fix the gate first."
+  fi
+  if [ -f "$ALLOW" ]; then
+    if diff "$ALLOW" "$STATE/current" > "$STATE/pending.diff"; then echo "No changes since the last approval."; exit 0; fi
+    echo "Changes since the last approval (< removed, > added):"
+    cat "$STATE/pending.diff"
+  else
+    echo "No baseline yet. Full inventory:"
+    cat "$STATE/current"
+  fi
+  printf '\nType APPROVE to accept this state: '
+  read -r ans
+  [ "$ans" = APPROVE ] || die "not approved, nothing changed"
+  mkdir -p "$ETC/history"
+  [ -f "$ALLOW" ] && cp -p "$ALLOW" "$ETC/history/allowlist.$(date +%Y%m%d-%H%M%S)"
+  install -o root -g wheel -m 644 "$STATE/current" "$ALLOW"
+  rm -f "$STATE/pending.diff"
+  log "approved by ${SUDO_USER:-root}"
+  echo "Approved. To back up now: sudo /usr/local/sbin/backup-gate run now"
+}
+
+status() {
+  local last
+  last=$(cat "$STATE/last-success" 2>/dev/null)
+  echo "Last successful backup: $([ -n "$last" ] && date -r "$last" '+%Y-%m-%d %H:%M' || echo never)"
+  echo "Recent log:"; tail -n 5 "$LOG" 2>/dev/null | sed 's/^/  /'
+  [ -s "$STATE/flags" ] && { echo "PROBLEMS (block backups):"; sed 's/^/  /' "$STATE/flags"; }
+  [ -s "$STATE/pending.diff" ] && { echo "Pending changes (< removed, > added):"; cat "$STATE/pending.diff"; }
+  return 0
+}
+
+case "${1:-}" in
+  run) run "${2:-}" ;;
+  approve) approve ;;
+  inventory) need_root inventory; refresh; echo "$(wc -l < "$STATE/current" | tr -d ' ') lines in $STATE/current"; cat "$STATE/flags" ;;
+  status) status ;;
+  version|--version) echo "backup-gate $VERSION" ;;
+  *) echo "usage: backup-gate run [now] | approve | inventory | status | version" >&2; exit 64 ;;
+esac

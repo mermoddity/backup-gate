@@ -1,6 +1,6 @@
 # backup-gate
 
-> Free, open-source macOS tool (MIT). Time Machine backs up only when nothing that can run code at startup has changed since the user approved it. When a launch agent, login item, shell startup file, sudoers rule or similar changes, backups pause until the user reviews and approves the change, so malware that hides on the Mac can't push the last clean backup out of Time Machine's limited history.
+> Free, open-source macOS tool (MIT) that keeps malware out of Time Machine backups. Time Machine backs up only when nothing that can run code at startup has changed since the user approved it. When a launch agent, login item, shell startup file, sudoers rule or similar changes, the backup waits until the user reviews and approves the change. Without it, malware that installs itself is copied into every backup and comes back on restore or Migration Assistant, while the clean backups from before the infection age out of Time Machine's limited history.
 
 - One bash script (about 550 lines) plus a LaunchDaemon; no dependencies, no network access.
 - Requires a local Time Machine disk (USB/Thunderbolt APFS); network/NAS destinations aren't supported.
@@ -12,6 +12,6 @@
 
 - [Home](https://mermoddity.github.io/backup-gate/)
 - [Source and README](https://github.com/mermoddity/backup-gate)
-- [Why Time Machine can lose its last clean backup](https://mermoddity.github.io/backup-gate/time-machine-malware.html)
+- [The story: a fake CAPTCHA, an infostealer, and Time Machine](https://mermoddity.github.io/backup-gate/time-machine-malware.html)
 - [Releases](https://github.com/mermoddity/backup-gate/releases)
 - [Security policy](https://github.com/mermoddity/backup-gate/blob/main/SECURITY.md)

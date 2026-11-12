@@ -1,23 +1,32 @@
 # backup-gate
 
-**Time Machine backups that stop when your Mac might be compromised.**
+**Keep malware out of your Time Machine backups.**
 
 [Website](https://mermoddity.github.io/backup-gate/) ·
-[Why this matters](https://mermoddity.github.io/backup-gate/time-machine-malware.html) ·
+[The story behind it](https://mermoddity.github.io/backup-gate/time-machine-malware.html) ·
 [Releases](https://github.com/mermoddity/backup-gate/releases)
 
-Time Machine keeps a limited history. If malware installs itself and goes unnoticed, every
-hourly backup copies it in, and Time Machine gradually deletes the older, clean backups to make
-room. By the time you notice, there may be no clean backup left to restore.
+Time Machine backs up everything on your Mac, malware included. If something installs itself
+and goes unnoticed, the next hourly backup copies it in, and so does every backup after that.
+Restore one of them, or set up a new Mac from it with Migration Assistant, and the malware comes
+back with your files. Meanwhile, Time Machine deletes the oldest backups when the disk fills up,
+so the clean ones from before the infection eventually disappear.
 
-backup-gate lets Time Machine back up only when nothing that can run code at startup has changed
-since you last approved it. When something changes (a new LaunchAgent, a login item, an edited
-`.zshrc`, a new sudoers rule...), backups pause and you get a notification. You look at the
-change and approve it, or investigate it. Either way, your older backups stay clean.
+backup-gate checks your Mac before every backup. Time Machine runs only when nothing that can run
+code at startup has changed since you last approved it. When something changes (a new
+LaunchAgent, a login item, an edited `.zshrc`, a new sudoers rule...), the backup waits and you
+get a notification. You look at the change: approve it if it's yours, investigate it if it
+isn't. Until you approve, the change doesn't go into your backups, and the ones you already have
+stay clean.
 
 It's a single bash script with a LaunchDaemon. It has no dependencies and doesn't use the network.
 It runs as root, so read it before you install it: it's about 550 lines, and
 [Why trust it](#why-trust-it) explains what else you can check.
+
+**Why it exists:** a fake CAPTCHA once got me to paste a command into Terminal. It installed an
+infostealer as a launch agent named `com.Apple.xkscqmbapqwbhbet`. I caught it at once and my
+last backup was clean, but only by luck: the next hourly backup would have copied it in.
+[The full story](https://mermoddity.github.io/backup-gate/time-machine-malware.html).
 
 ```
 $ sudo /usr/local/sbin/backup-gate approve
@@ -240,12 +249,13 @@ from the tagged commit. Homebrew checks the same checksum automatically.
 ## FAQ
 
 **Doesn't Time Machine already protect me from malware and ransomware?**
-Partly. Ransomware that encrypts your files usually can't change the backups already made,
-which are read-only snapshots (unless it gets root and goes after the disk itself, see
-[Limits](#limits)). Malware that hides and waits is different: every hourly backup
-copies it in, and Time Machine deletes the oldest backups when the disk fills up. After a few
-weeks or months, there may be no backup left from before the infection. backup-gate stops
-backing up at the first sign of new persistence, so the clean backups don't age out.
+It protects your files, not the state of your Mac: it backs up whatever is there, malware
+included, and restores or migrates it the same way. Ransomware that encrypts your files usually
+can't change the backups already made, which are read-only snapshots (unless it gets root and
+goes after the disk itself, see [Limits](#limits)). Malware that installs itself quietly is
+different: it goes into every backup from then on, and when the disk fills up, the backups from
+before the infection are deleted. backup-gate doesn't back up a Mac whose startup items changed
+until you've approved the change.
 
 **How is this different from BlockBlock or KnockKnock?**
 [BlockBlock](https://objective-see.org/products/blockblock.html) alerts you in real time when
@@ -281,8 +291,12 @@ backup-gate protects your backup history. It doesn't stop or remove malware.
   Keep the admin password to yourself, and never type it into a dialog you didn't open.
   A real-time persistence monitor such as [BlockBlock](https://objective-see.org/products/blockblock.html)
   is a good companion, and so is a periodic scan with [KnockKnock](https://objective-see.org/products/knockknock.html).
-- **The gate only watches persistence.** Malware that runs once and leaves nothing behind
-  doesn't trigger it. Neither does a change to your documents, for example by ransomware.
+- **The gate only watches persistence.** It keeps out malware that sets itself up to run again
+  (the places listed in [What's in the inventory](#whats-in-the-inventory)). Malware files that
+  aren't set up to run, or that start from somewhere the gate doesn't watch, are backed up like
+  any other file. Malware that runs once and leaves nothing behind doesn't trigger it, and
+  neither does a change to your documents, for example by ransomware. If you approve a change
+  you shouldn't have, it goes into the backups too.
 - **It needs you.** Backups stay paused until you approve. If you ignore the notifications,
   your backups go stale. The 48-hour warning is there to remind you.
 - **The Mac must sometimes be unlocked while the disk is connected.** Time Machine won't

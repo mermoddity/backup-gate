@@ -14,7 +14,7 @@
 #   backup-gate version
 set -u
 umask 022
-VERSION=3.1.2
+VERSION=3.2.0
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH LC_ALL=C
 
@@ -26,6 +26,8 @@ STATE=/var/db/backup-gate
 LOG=/var/log/backup-gate.log
 PLIST=/Library/LaunchDaemons/local.backup-gate.plist
 LOCK=/var/run/backup-gate.lock
+# Where Homebrew keeps its copy (Apple silicon, Intel). Only read by `status`, see pending_upgrade.
+BREW="/opt/homebrew/opt/backup-gate/libexec /usr/local/opt/backup-gate/libexec"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 die() { echo "backup-gate: $*" >&2; exit 1; }
@@ -502,8 +504,30 @@ approve() {
   echo "Approved. To back up now: sudo /usr/local/sbin/backup-gate run now"
 }
 
+newer() {  # version $1 > version $2 (both N.N.N)
+  local IFS=. i; local -a a b
+  read -r -a a <<< "$1"; read -r -a b <<< "$2"
+  for i in 0 1 2; do
+    [ "$((10#${a[i]}))" -gt "$((10#${b[i]}))" ] && return 0
+    [ "$((10#${a[i]}))" -lt "$((10#${b[i]}))" ] && return 1
+  done
+  return 1
+}
+
+# A newer version that Homebrew downloaded but that isn't installed yet. Homebrew's folder
+# is writable by the user, so only a strictly formatted version number is read from it;
+# nothing there is run. Prints "VERSION FOLDER".
+pending_upgrade() {
+  local d v
+  for d in $BREW; do
+    v=$(sed -n 's/^VERSION=\([0-9]\{1,4\}\.[0-9]\{1,4\}\.[0-9]\{1,4\}\)$/\1/p' "$d/backup-gate" 2>/dev/null | head -n 1)
+    [ -n "$v" ] && newer "$v" "$VERSION" && { echo "$v $d"; return 0; }
+  done
+  return 1
+}
+
 status() {
-  local last
+  local last up
   last=$(cat "$STATE/last-success" 2>/dev/null)
   echo "Last successful backup: $([ -n "$last" ] && date -r "$last" '+%Y-%m-%d %H:%M' || echo never)"
   echo "Recent log:"; tail -n 5 "$LOG" 2>/dev/null | sed 's/^/  /'
@@ -512,6 +536,10 @@ status() {
     echo "Changes waiting for approval (as of the last check):"
     describe "$ALLOW" "$STATE/current" brief | sed 's/^/  /'
     echo "Details, signers and approval: sudo $SELF approve"
+  fi
+  if up=$(pending_upgrade); then
+    echo "Update downloaded but not installed: ${up%% *} (running: $VERSION)."
+    echo "Install it: sudo ${up#* }/install.sh"
   fi
   return 0
 }

@@ -1,15 +1,21 @@
 name: CI
 on: [push, pull_request]
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Syntax
         run: for f in backup-gate install.sh uninstall.sh tests/run.sh; do bash -n "$f"; done
       - name: Plist
         run: plutil -lint local.backup-gate.plist
+      - name: Homebrew formula
+        run: ruby -c packaging/homebrew/backup-gate.rb
       - name: ShellCheck
-        run: brew install shellcheck && shellcheck -S error backup-gate install.sh uninstall.sh tests/run.sh
+        run: brew install shellcheck && shellcheck backup-gate install.sh uninstall.sh tests/run.sh
       - name: Tests
         run: bash tests/run.sh

@@ -2,6 +2,8 @@
 # Tests for backup-gate's run logic. No root, no Time Machine, no changes to the system:
 # the script runs against a temp folder, with stand-ins for ioreg, diskutil, tmutil and id.
 #   bash tests/run.sh
+# Checks are written as single-quoted strings that check() evaluates later:
+# shellcheck disable=SC2016
 set -u
 GATE=$(cd "$(dirname "$0")/.." && pwd)/backup-gate
 T=$(mktemp -d "${TMPDIR:-/tmp}/backup-gate-test.XXXXXX")
@@ -10,7 +12,7 @@ mkdir -p "$T/bin" "$T/etc" "$T/state"
 
 # Test copy: own paths and PATH; inventory, exclusions and notifications replaced by stubs.
 sed -e "s#^SELF=.*#SELF=$T/backup-gate#" -e "s#^ETC=.*#ETC=$T/etc#" -e "s#^STATE=.*#STATE=$T/state#" \
-    -e "s#^LOG=.*#LOG=$T/log#" -e "s#^LOCK=.*#LOCK=$T/lock#" -e "s#^PLIST=.*#PLIST=$T/plist#" \
+    -e "s#^LOG=.*#LOG=$T/log#" -e "s#^LOCK=.*#LOCK=$T/lock#" -e "s#^PLIST=.*#PLIST=$T/plist#" -e "s#^BREW=.*#BREW=$T/brew#" \
     -e "s#^PATH=.*#PATH=$T/bin:/usr/bin:/bin:/usr/sbin:/sbin#" "$GATE" |
 awk -v T="$T" '/^case "\$\{1:-\}" in/ {
   print "refresh() { cp \"" T "/inv\" \"$STATE/current\"; : > \"$STATE/flags\"; }"
@@ -58,6 +60,8 @@ reset() {  # $1 = hours since last success
   echo unlocked > "$T/lockstate"; echo ok > "$T/tmmode"; echo Yes > "$T/mounted"; echo 0 > "$T/tmrunning"
   echo 2026-01-01-000000 > "$T/snaps"; cp "$T/etc/allowlist" "$T/inv"
 }
+# rc is read by the checks, through eval
+# shellcheck disable=SC2034
 gate() { "$T/backup-gate" run "$@" > /dev/null 2>&1; rc=$?; }
 age() { echo $(( $(date +%s) - $(cat "$T/state/last-success") )); }
 check() {  # name, condition...
@@ -142,6 +146,19 @@ old=/dev/null; printf 'shell%s/Users/u/.zshrc%sABSENT\nhook%s/x:LoginHook%snone\
   "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" > "$new"
 desc compact
 check "first approval hides watched-but-absent files" eval '[ "$(grep -c "^  \* " "$F/out")" = 1 ] && has "they don'"'"'t exist yet: 2"'
+
+# ---- update downloaded by Homebrew but not installed (status) ----
+echo
+mkdir -p "$T/brew"; cp "$T/etc/allowlist" "$T/state/current"
+st() { "$T/backup-gate" status > "$F/out" 2>&1; }
+sed 's/^VERSION=.*/VERSION=99.0.0/' "$GATE" > "$T/brew/backup-gate"; st
+check "newer Homebrew copy: status says so"        eval 'has "Update downloaded but not installed: 99.0.0" && has "sudo $T/brew/install.sh"'
+sed 's/^VERSION=.*/VERSION=0.0.1/' "$GATE" > "$T/brew/backup-gate"; st
+check "older Homebrew copy: nothing said"          eval '! has "Update downloaded"'
+printf 'VERSION=99.0.0;touch %s/pwned\n' "$T" > "$T/brew/backup-gate"; st
+check "malformed version: ignored, nothing run"    eval '! has "Update downloaded" && [ ! -e "$T/pwned" ]'
+rm -rf "$T/brew"; st
+check "no Homebrew copy: nothing said"             eval '! has "Update downloaded"'
 
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

@@ -12,6 +12,8 @@ since you last approved it. When something changes (a new LaunchAgent, a login i
 change and approve it, or investigate it. Either way, your older backups stay clean.
 
 It's a single bash script with a LaunchDaemon. It has no dependencies and doesn't use the network.
+It runs as root, so read it before you install it: it's about 550 lines, and
+[Why trust it](#why-trust-it) explains what else you can check.
 
 ```
 $ sudo /usr/local/sbin/backup-gate approve
@@ -84,16 +86,27 @@ Some problems always block, and `approve` refuses to accept them:
 
 1. Add your backup disk in **System Settings › General › Time Machine** (choose to encrypt it).
    You don't need to wait for the first backup.
-2. Clone the repo and run the preflight. It makes no changes and doesn't need sudo:
+2. Get the files, with Homebrew or from a release:
 
    ```sh
-   git clone https://github.com/mermoddity/backup-gate.git
-   cd backup-gate
+   brew install mermoddity/tap/backup-gate
+   cd "$(brew --prefix)/opt/backup-gate/libexec"
+   ```
+
+   Homebrew only downloads the files. Nothing from Homebrew's folder runs as root after you
+   install: the installer copies the gate to the root-owned `/usr/local/sbin`.
+
+   Or, without Homebrew, download `backup-gate-X.Y.Z.tar.gz` and `SHA256SUMS` from the
+   [latest release](https://github.com/mermoddity/backup-gate/releases/latest),
+   [verify them](#verify-a-download), then `tar xzf backup-gate-X.Y.Z.tar.gz && cd backup-gate-X.Y.Z`.
+3. Read `backup-gate` before you install it. It runs as root.
+4. Run the preflight. It makes no changes and doesn't need sudo:
+
+   ```sh
    ./install.sh --check
    ```
 
-3. Read `backup-gate` before you install it. It runs as root.
-4. Install:
+5. Install:
 
    ```sh
    sudo ./install.sh
@@ -103,14 +116,32 @@ Some problems always block, and `approve` refuses to accept them:
    Time Machine's automatic backups (backups now go through the gate). It then shows the full
    inventory of your Mac and asks you to type `APPROVE`. **Only approve if you trust the Mac's
    current state.** On a Mac you think may already be infected, clean it up first.
-5. Run the first backup:
+6. Run the first backup:
 
    ```sh
    sudo /usr/local/sbin/backup-gate run now
    ```
 
-To upgrade, `git pull` and run `sudo ./install.sh` again. Your config and allowlist are kept,
-and you approve the new gate files.
+## Upgrade
+
+backup-gate never checks for updates itself: it doesn't use the network. To hear about new
+versions, use Homebrew, or on GitHub choose **Watch › Custom › Releases**. Each version's
+changes are in [CHANGELOG.md](CHANGELOG.md).
+
+With Homebrew:
+
+```sh
+brew upgrade backup-gate
+sudo "$(brew --prefix)/opt/backup-gate/libexec/install.sh"
+```
+
+`brew upgrade` only downloads the new version. Until you run the installer, the old one keeps
+running, and `backup-gate status` reminds you that the update is waiting.
+
+Without Homebrew, download and verify the new release and run `sudo ./install.sh` from it.
+
+Either way, your config and allowlist are kept, and the installer asks you to approve the new
+gate files. Check that they're the only changes listed.
 
 ## Daily use
 
@@ -169,6 +200,69 @@ The gate also excludes `node_modules` and `.venv` folders in home directories fr
 when it finds them. macOS doesn't let the daemon read Desktop, Documents, Downloads and
 the other privacy-protected folders, so it can't exclude folders inside them.
 
+## Why trust it
+
+backup-gate runs as root, so you shouldn't install it on trust alone. What you can check:
+
+- **The code.** One bash script of about 550 lines, plus a short installer and a LaunchDaemon
+  plist. No dependencies, no compiled code, nothing downloaded at runtime, no network access.
+- **What it does.** It reads files and runs `tmutil`, `diskutil`, `codesign`, `sfltool`,
+  `profiles` and `systemextensionsctl`. The only things it changes are its own state in
+  `/var/db/backup-gate`, its log, its allowlist when you approve (keeping the previous ones in
+  `/usr/local/etc/backup-gate/history`), and Time Machine exclusions for `node_modules` and
+  `.venv` folders. The installer also turns off Time Machine's automatic backups.
+- **The download.** Each release is built by GitHub Actions from a tagged commit, with a
+  checksum and a signed attestation (below).
+- **The tests.** `bash tests/run.sh` runs without root and doesn't touch your system. CI runs
+  them and ShellCheck on every push.
+- **Security reports** go through [SECURITY.md](SECURITY.md).
+
+### Verify a download
+
+```sh
+shasum -a 256 -c SHA256SUMS
+gh attestation verify backup-gate-X.Y.Z.tar.gz --repo mermoddity/backup-gate
+```
+
+The first command checks that the file wasn't damaged or swapped. The second checks with
+GitHub's signing service that the tarball was built by this repository's release workflow,
+from the tagged commit. Homebrew checks the same checksum automatically.
+
+## FAQ
+
+**Doesn't Time Machine already protect me from malware and ransomware?**
+Partly. Ransomware that encrypts your files usually can't change the backups already made,
+which are read-only snapshots (unless it gets root and goes after the disk itself, see
+[Limits](#limits)). Malware that hides and waits is different: every hourly backup
+copies it in, and Time Machine deletes the oldest backups when the disk fills up. After a few
+weeks or months, there may be no backup left from before the infection. backup-gate stops
+backing up at the first sign of new persistence, so the clean backups don't age out.
+
+**How is this different from BlockBlock or KnockKnock?**
+[BlockBlock](https://objective-see.org/products/blockblock.html) alerts you in real time when
+something installs persistence. [KnockKnock](https://objective-see.org/products/knockknock.html)
+lists what's persistent on your Mac when you run it. Neither touches your backups.
+backup-gate ties the backups to the same idea: no backup until you've approved what changed.
+They work well together.
+
+**Why not just unplug the backup disk?**
+Do that too: an unplugged disk is the best protection. But a disk you unplug is a disk you
+forget to plug in, and if malware is already on the Mac, plugging it in and backing up copies
+the malware too. backup-gate checks before every backup.
+
+**How often will it ask me to approve something?**
+After you install or update apps that add login or background items, Homebrew services or
+macOS, and after you edit a shell file like `.zshrc`. Ordinary app updates that don't touch
+those don't need approval. How often that happens depends on how often you install things.
+
+**Does it work with a network or NAS backup destination?**
+No. It reads success from the APFS snapshots on the backup disk, which requires a local disk
+over USB or Thunderbolt.
+
+**Is it on the Mac App Store, or available as an app?**
+No. App Store apps can't install a root LaunchDaemon or read the system's login items. It's a
+command-line tool, installed with Homebrew or from a release.
+
 ## Limits
 
 backup-gate protects your backup history. It doesn't stop or remove malware.
@@ -192,6 +286,9 @@ backup-gate protects your backup history. It doesn't stop or remove malware.
 ```sh
 sudo ./uninstall.sh
 ```
+
+With Homebrew, run `sudo "$(brew --prefix)/opt/backup-gate/libexec/uninstall.sh"` first, then
+`brew uninstall backup-gate`.
 
 This removes the daemon, the script, the config and the state, and asks whether to turn
 automatic Time Machine backups back on. Your backups and the log are kept.

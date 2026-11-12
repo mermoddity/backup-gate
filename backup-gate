@@ -26,8 +26,8 @@ STATE=/var/db/backup-gate
 LOG=/var/log/backup-gate.log
 PLIST=/Library/LaunchDaemons/local.backup-gate.plist
 LOCK=/var/run/backup-gate.lock
-# Where Homebrew keeps its copy (Apple silicon, Intel). Only read by `status`, see pending_upgrade.
-BREW="/opt/homebrew/opt/backup-gate/libexec /usr/local/opt/backup-gate/libexec"
+# Where Homebrew keeps its copy (Apple silicon only). Only read by `status`, see pending_upgrade.
+BREW=/opt/homebrew/opt/backup-gate/libexec
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 die() { echo "backup-gate: $*" >&2; exit 1; }
@@ -515,15 +515,14 @@ newer() {  # version $1 > version $2 (both N.N.N)
 }
 
 # A newer version that Homebrew downloaded but that isn't installed yet. Homebrew's folder
-# is writable by the user, so only a strictly formatted version number is read from it;
-# nothing there is run. Prints "VERSION FOLDER".
+# is writable by the user, so anything there may have been planted: only a strictly formatted
+# version number is read (from a regular file, at most 64 KB), nothing there is run, and no
+# command pointing into that folder is suggested. Prints the version.
 pending_upgrade() {
-  local d v
-  for d in $BREW; do
-    v=$(sed -n 's/^VERSION=\([0-9]\{1,4\}\.[0-9]\{1,4\}\.[0-9]\{1,4\}\)$/\1/p' "$d/backup-gate" 2>/dev/null | head -n 1)
-    [ -n "$v" ] && newer "$v" "$VERSION" && { echo "$v $d"; return 0; }
-  done
-  return 1
+  local f=$BREW/backup-gate v
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  v=$(head -c 65536 < "$f" 2>/dev/null | sed -n 's/^VERSION=\([0-9]\{1,4\}\.[0-9]\{1,4\}\.[0-9]\{1,4\}\)$/\1/p' | head -n 1)
+  [ -n "$v" ] && newer "$v" "$VERSION" && echo "$v"
 }
 
 status() {
@@ -538,8 +537,9 @@ status() {
     echo "Details, signers and approval: sudo $SELF approve"
   fi
   if up=$(pending_upgrade); then
-    echo "Update downloaded but not installed: ${up%% *} (running: $VERSION)."
-    echo "Install it: sudo ${up#* }/install.sh"
+    echo "Homebrew has backup-gate $up, but $VERSION is installed."
+    echo "  If you ran 'brew upgrade' yourself, finish the upgrade (README, 'Upgrade')."
+    echo "  If you didn't, something else wrote to Homebrew's folder: don't run anything from it."
   fi
   return 0
 }

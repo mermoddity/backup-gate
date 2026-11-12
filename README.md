@@ -93,8 +93,11 @@ Some problems always block, and `approve` refuses to accept them:
    cd "$(brew --prefix)/opt/backup-gate/libexec"
    ```
 
-   Homebrew only downloads the files. Nothing from Homebrew's folder runs as root after you
-   install: the installer copies the gate to the root-owned `/usr/local/sbin`.
+   Homebrew only downloads the files (Apple silicon only: Intel Homebrew owns
+   `/usr/local/sbin`, see [Requirements](#requirements)). The installer you run in the next steps
+   copies the gate to the root-owned `/usr/local/sbin`, and that copy is the one that runs
+   from then on. Homebrew's folder is writable by your user account, so the installer is the
+   only thing from it that ever runs as root, and only when you start it.
 
    Or, without Homebrew, download `backup-gate-X.Y.Z.tar.gz` and `SHA256SUMS` from the
    [latest release](https://github.com/mermoddity/backup-gate/releases/latest),
@@ -136,7 +139,9 @@ sudo "$(brew --prefix)/opt/backup-gate/libexec/install.sh"
 ```
 
 `brew upgrade` only downloads the new version. Until you run the installer, the old one keeps
-running, and `backup-gate status` reminds you that the update is waiting.
+running, and `backup-gate status` mentions the newer version. Run the installer only right
+after a `brew upgrade` you started yourself: if `status` mentions a version you didn't
+download, something else wrote to Homebrew's folder, and running its installer would give it root.
 
 Without Homebrew, download and verify the new release and run `sudo ./install.sh` from it.
 

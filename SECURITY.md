@@ -13,9 +13,7 @@ week. Once a fix is released, the advisory is published, with credit to you if y
 
 ## Supported versions
 
-Only the latest release gets fixes. Upgrade with `brew upgrade backup-gate` followed by
-`sudo $(brew --prefix)/opt/backup-gate/libexec/install.sh`, or by installing the new release
-the way you installed the old one.
+Only the latest release gets fixes. See [Upgrade](README.md#upgrade) in the README.
 
 ## What counts
 

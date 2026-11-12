@@ -152,13 +152,17 @@ echo
 mkdir -p "$T/brew"; cp "$T/etc/allowlist" "$T/state/current"
 st() { "$T/backup-gate" status > "$F/out" 2>&1; }
 sed 's/^VERSION=.*/VERSION=99.0.0/' "$GATE" > "$T/brew/backup-gate"; st
-check "newer Homebrew copy: status says so"        eval 'has "Update downloaded but not installed: 99.0.0" && has "sudo $T/brew/install.sh"'
+check "newer Homebrew copy: status says so"        eval 'has "Homebrew has backup-gate 99.0.0" && ! has "sudo $T/brew"'
 sed 's/^VERSION=.*/VERSION=0.0.1/' "$GATE" > "$T/brew/backup-gate"; st
-check "older Homebrew copy: nothing said"          eval '! has "Update downloaded"'
+check "older Homebrew copy: nothing said"          eval '! has "Homebrew has"'
 printf 'VERSION=99.0.0;touch %s/pwned\n' "$T" > "$T/brew/backup-gate"; st
-check "malformed version: ignored, nothing run"    eval '! has "Update downloaded" && [ ! -e "$T/pwned" ]'
+check "malformed version: ignored, nothing run"    eval '! has "Homebrew has" && [ ! -e "$T/pwned" ]'
+rm -f "$T/brew/backup-gate"; mkfifo "$T/brew/backup-gate"; st
+check "FIFO planted: status doesn't hang"          eval 'has "Last successful backup" && ! has "Homebrew has"'
+rm -f "$T/brew/backup-gate"; ln -s /dev/zero "$T/brew/backup-gate"; st
+check "symlink planted: ignored"                   eval 'has "Last successful backup" && ! has "Homebrew has"'
 rm -rf "$T/brew"; st
-check "no Homebrew copy: nothing said"             eval '! has "Update downloaded"'
+check "no Homebrew copy: nothing said"             eval '! has "Homebrew has"'
 
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

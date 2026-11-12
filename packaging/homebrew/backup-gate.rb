@@ -7,11 +7,14 @@ class BackupGate < Formula
   sha256 "@SHA256@"
   license "MIT"
 
+  # Intel Homebrew owns /usr/local/sbin, and the gate refuses to run from a folder the user can write to.
+  depends_on arch: :arm64
   depends_on :macos
 
   # Nothing is linked into Homebrew's bin on purpose: Homebrew's folders are writable by your
-  # user account, so the gate must never run from here as root. install.sh copies it to the
-  # root-owned /usr/local/sbin, and that copy is the one that runs.
+  # user account, so the gate must never run from here as root day to day. install.sh copies
+  # it to the root-owned /usr/local/sbin, and that copy is the one that runs. install.sh itself
+  # does run from here, as root, when you install or upgrade: like any installer.
   def install
     libexec.install "backup-gate", "install.sh", "uninstall.sh", "config.example", "local.backup-gate.plist"
   end
@@ -19,7 +22,7 @@ class BackupGate < Formula
   def caveats
     <<~EOS
       backup-gate runs as root, so Homebrew only downloads it. To install or upgrade
-      (after every `brew upgrade backup-gate`), run:
+      (after every `brew upgrade backup-gate` you ran yourself), run:
         #{opt_libexec}/install.sh --check
         sudo #{opt_libexec}/install.sh
 

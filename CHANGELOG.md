@@ -10,7 +10,10 @@ changes to accept. This file says what you are approving.
 - Homebrew: `brew install mermoddity/tap/backup-gate`. Homebrew only downloads the files;
   `sudo …/install.sh` installs the root-owned copy, as before.
 - `status` says when Homebrew has downloaded a newer version that isn't installed yet. It reads
-  only the version number from Homebrew's folder and doesn't use the network.
+  only the version number from Homebrew's folder (a regular file, at most 64 KB), suggests no
+  command pointing there, and doesn't use the network.
+- The Homebrew formula is Apple silicon only: Intel Homebrew owns `/usr/local/sbin`, where the
+  gate must be root-owned.
 - README: how to verify a download, FAQ.
 - SECURITY.md: how to report a vulnerability.
 

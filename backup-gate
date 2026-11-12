@@ -14,7 +14,7 @@
 #   backup-gate version
 set -u
 umask 022
-VERSION=3.0.0
+VERSION=3.1.0
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH LC_ALL=C
 
@@ -259,8 +259,8 @@ run() {
     exit 3
   fi
   if [ -s "$STATE/pending.diff" ]; then
-    local n; n=$(grep -c '^[<>]' "$STATE/pending.diff")
-    log "BLOCKED: $n line(s) changed since the last approval"
+    local n; n=$(count_changes "$ALLOW" "$STATE/current")
+    log "BLOCKED: $n change(s) since the last approval"
     notify "$n change(s) since the last approval. Backups paused until: sudo backup-gate approve"
     check_stale
     exit 3
@@ -270,25 +270,222 @@ run() {
   backup
 }
 
+# ---- readable change list -------------------------------------------------------------
+# Inventory text, plist contents and signatures come from files an attacker may control.
+# Control characters are stripped before anything reaches the terminal.
+clean() { printf '%s' "$1" | tr '\n' ' ' | LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+
+# changes OLD NEW: one record per changed item, "STATUS<US>old line<US>new line",
+# most important kinds first. Items are matched by kind + path (or uid + identifier for
+# background items), numbered per key so a duplicate can't hide behind an approved entry.
+changes() {
+  awk -F'\t' '
+    function base(  a) {
+      if ($1 == "btm") { split($3, a, "|"); return $1 "\t" $2 "\t" a[2] }
+      if ($1 == "cmd" || $1 == "error") return $0
+      return $1 "\t" $2
+    }
+    function rank(kind,  r) { r = index("launch btm system shell hook cmd error", kind); return r ? r : 99 }
+    function out(st, o, n,  l, f) {
+      l = (n != "" ? n : o); split(l, f, "\t")
+      printf "%03d %s\037%s\037%s\037%s\n", rank(f[1]), l, st, o, n
+    }
+    FILENAME == ARGV[1] { b = base(); ov[b, ++oc[b]] = $0; seen[b] = 1; next }
+    { b = base(); nv[b, ++nc[b]] = $0; seen[b] = 1 }
+    END {
+      for (b in seen) {
+        # pair identical entries first, so a duplicate shows up as one addition
+        split("", om); split("", nm); uo = un = 0
+        for (i = 1; i <= oc[b]; i++)
+          for (j = 1; j <= nc[b]; j++)
+            if (!nm[j] && ov[b, i] == nv[b, j]) { om[i] = nm[j] = 1; break }
+        for (i = 1; i <= oc[b]; i++) if (!om[i]) ro[++uo] = ov[b, i]
+        for (j = 1; j <= nc[b]; j++) if (!nm[j]) rn[++un] = nv[b, j]
+        for (k = 1; k <= uo || k <= un; k++)
+          if (k > un) out("REMOVED", ro[k], ""); else if (k > uo) out("ADDED", "", rn[k]); else out("CHANGED", ro[k], rn[k])
+      }
+    }' "$1" "$2" | sort | cut -d $'\037' -f 2-
+}
+
+quote() {  # show an argument the way a shell would need it
+  local q="'\\''"
+  case "$1" in *[[:space:]\'\"\$\`\\]*) printf "'%s'" "${1//\'/$q}" ;; *) printf '%s' "$1" ;; esac
+}
+
+plist_args() {  # ProgramArguments of a launchd plist as one shell-like line
+  local i=0 a out=
+  while [ "$i" -lt 64 ] && a=$(plutil -extract "ProgramArguments.$i" raw -o - "$1" 2>/dev/null); do
+    out="$out${out:+ }$(quote "$a")"; i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
+uid_path() {  # Background Task Management writes /Users/<uid>/...: use the real home folder
+  local uid rest name home
+  case "$1" in /Users/[0-9]*/*) ;; *) printf '%s' "$1"; return ;; esac
+  uid=${1#/Users/}; rest=${uid#*/}; uid=${uid%%/*}
+  name=$(id -nu "$uid" 2>/dev/null) && home=$(dscl . -read "/Users/$name" NFSHomeDirectory 2>/dev/null | sed 's/^NFSHomeDirectory: //') \
+    && [ -n "$home" ] && printf '%s/%s' "$home" "$rest" || printf '%s' "$1"
+}
+
+signer() {  # who signed a program or app bundle, in one line
+  local out auth
+  [ -e "$1" ] || { echo "not found on disk"; return; }
+  out=$(codesign -dv --verbose=2 "$1" 2>&1) || { echo "UNSIGNED"; return; }
+  case "$out" in *Signature=adhoc*) echo "ad-hoc signature (no developer identity)"; return ;; esac
+  codesign --verify "$1" 2>/dev/null || { echo "INVALID signature (modified after signing?)"; return; }
+  # Trust the certificate chain, not the certificate's name (a self-signed one can be named anything)
+  codesign --verify -R='anchor apple' "$1" 2>/dev/null && { echo "Apple"; return; }
+  auth=$(clean "$(printf '%s\n' "$out" | sed -n 's/^Authority=//p' | head -n 1)")
+  if codesign --verify -R='anchor apple generic' "$1" 2>/dev/null; then echo "${auth:-signed with an Apple-issued certificate}"
+  else echo "UNTRUSTED certificate (not issued by Apple): ${auth:-no name}"; fi
+}
+
+risks() {  # warnings about a program: $1 = path, $2 = signer text
+  case "$2" in
+    UNSIGNED*|ad-hoc*) echo "! not signed by an identified developer (normal for your own scripts and Homebrew tools)" ;;
+    UNTRUSTED*)        echo "! signed with a certificate Apple didn't issue: the name above proves nothing" ;;
+    INVALID*)          echo "! the signature doesn't match the program: it was modified after signing" ;;
+    "not found"*)      echo "! the program doesn't exist (a leftover from an uninstalled app, or not installed yet)" ;;
+  esac
+  case "${1##*/}" in sh|bash|zsh|dash|ksh|csh|tcsh|python*|perl*|ruby*|node|osascript|curl|wget|nc|open)
+    echo "! starts ${1##*/}: what it does depends on the arguments above" ;; esac
+  case "$1" in /tmp/*|/private/tmp/*|/var/tmp/*|/private/var/tmp/*|/var/folders/*|/private/var/folders/*|/Users/Shared/*|*/.*)
+    echo "! runs from a temporary, shared or hidden folder" ;; esac
+}
+
+# describe OLD NEW MODE: print the changes. MODE: full (program, arguments, signer),
+# compact (one line + signer, for the first approval) or brief (one line, no file access).
+describe() {
+  local mode=$3 st old new kind f2 f3 f4 o3 o4 label name btype bid burl bexe who prog args sig l note hidden=0
+  local -a d
+  local b='' r='' g='' y='' x=''
+  [ -t 1 ] && { b=$'\e[1m'; r=$'\e[31m'; g=$'\e[32m'; y=$'\e[33m'; x=$'\e[0m'; }
+  while IFS=$'\037' read -r st old new; do
+    old=$(clean "$old"); new=$(clean "$new")
+    IFS=$'\t' read -r kind f2 f3 f4 <<< "${new:-$old}"
+    o3=; o4=; [ -n "$old" ] && IFS=$'\t' read -r _ _ o3 o4 <<< "$old"
+    if [ "$mode" = compact ]; then  # first approval: skip the watched files that don't exist
+      case "$f3" in ABSENT|none|"There are no configuration profiles installed"|"0 extension(s)") hidden=$((hidden + 1)); continue ;; esac
+    fi
+    name=$f2; prog=; args=; note=; d=()
+    case "$kind" in
+      launch)
+        name=${f2##*/}; name=${name%.plist}
+        case "$f2" in
+          /Library/LaunchDaemons/*) label="Launch daemon (runs as root)" ;;
+          /Library/LaunchAgents/*)  label="Launch agent (all users)" ;;
+          /Library/StartupItems/*)  label="Startup item (runs as root)" ;;
+          /var/root/Library/LaunchAgents/*) label="Launch agent (user root)" ;;
+          */Library/LaunchAgents/*) who=${f2%%/Library/LaunchAgents/*}; label="Launch agent (user ${who##*/})" ;;
+          *) label="Launch item" ;;
+        esac
+        [ -n "$new" ] && d+=("file     $f2  (${f3//:/ })")
+        if [ -n "$new" ] && [ -f "$f2" ]; then
+          prog=$(plutil -extract Program raw -o - "$f2" 2>/dev/null || plutil -extract ProgramArguments.0 raw -o - "$f2" 2>/dev/null)
+          args=$(plist_args "$f2")
+          [ -n "$args" ] || args=$(quote "$prog")
+          [ -n "$args" ] && d+=("runs     $(clean "$args")")
+          [ -n "$prog" ] || note="runs     nothing (empty or invalid plist)"
+        fi ;;
+      btm)
+        IFS='|' read -r btype bid burl bexe <<< "$f3"
+        btype=${btype% (*}; [[ $bid =~ ^[0-9]+\.(.+)$ ]] && bid=${BASH_REMATCH[1]}
+        if [ "$f2" = -2 ]; then who=system; else who=$(id -nu "$f2" 2>/dev/null || echo "uid $f2"); fi
+        case "$btype" in
+          app) label="Login item ($who)" ;;
+          "legacy agent") label="Background agent ($who)" ;;
+          "legacy daemon") label="Background daemon (runs as root)" ;;
+          "background tasks") label="Background task ($who)" ;;
+          developer) label="Developer identity with background items ($who)" ;;
+          *) label="Background item: $btype ($who)" ;;
+        esac
+        name=${bid:-$burl}
+        burl=${burl#file://}; [ "$burl" = "(null)" ] && burl=
+        [ "$bexe" = "(null)" ] && bexe=
+        [ -n "$burl" ] && [ "$burl" != "$bexe" ] && d+=("item     $(uid_path "$burl")")
+        prog=$(uid_path "${bexe:-$burl}"); [ "${prog#/}" = "$prog" ] && prog= ;;
+      shell)  label="Shell or SSH startup file" ;;
+      system)
+        case "$f2" in
+          "$SELF"|"$CONFIG")             label="backup-gate itself"; [ "$st" = CHANGED ] && d+=("note     expected after upgrading or editing backup-gate") ;;
+          /Library/PrivilegedHelperTools/*) label="Privileged helper (runs as root)"; prog=$f2 ;;
+          /etc/sudoers*|/etc/pam.d/*)    label="sudo or login rule" ;;
+          /etc/hosts)                    label="hosts file (name resolution)" ;;
+          /Library/Extensions/*)         label="Kernel extension" ;;
+          /Library/Security/SecurityAgentPlugins/*) label="Login plugin" ;;
+          /Library/ScriptingAdditions/*) label="Scripting addition" ;;
+          /etc/crontab|/var/at/*|/etc/periodic/*) label="Scheduled job" ;;
+          /etc/ssh/*)                    label="SSH server setting" ;;
+          *)                             label="System startup file" ;;
+        esac
+        # entries listed from a folder have "owner:group:mode hash", single files just a hash
+        if [ -n "$f4" ]; then [ -n "$new" ] && d+=("owner    ${f3//:/ }"); else o4=$o3; f4=$f3; o3=; f3=; fi ;;
+      hook)   label="Login or logout hook"; d+=("command  ${o3:+$o3 -> }$f3") ;;
+      cmd)    case "$f2" in profiles) label="Configuration profiles" ;; sysext) label="System extensions" ;; *) label=$f2 ;; esac
+              name=$f3 ;;
+      error)  label="Inventory error"; name="$f2 $f3" ;;
+      *)      label=$kind ;;
+    esac
+    if [ "$st" = CHANGED ] && [ "$kind" != hook ]; then
+      [ "$kind" = shell ] && { o4=$o3; f4=$f3; o3=; f3=; }
+      [ -n "$o3" ] && [ "$o3" != "$f3" ] && d+=("change   permissions ${o3//:/ } -> ${f3//:/ }")
+      if [ "$o4" != "$f4" ]; then
+        case "$o4/$f4" in ABSENT/*) d+=("change   created") ;; */ABSENT) d+=("change   deleted") ;; *) d+=("change   contents changed") ;; esac
+      fi
+    fi
+    if [ "$mode" = compact ]; then printf '  * '
+    else case "$st" in ADDED) printf '%s+ ADDED  %s ' "$g" "$x" ;; REMOVED) printf '%s- REMOVED%s ' "$r" "$x" ;; *) printf '%s~ CHANGED%s ' "$y" "$x" ;; esac; fi
+    printf '%s%s%s: %s\n' "$b" "$label" "$x" "$name"
+    [ "$mode" = brief ] && continue
+    if [ "$mode" = full ] && [ "${#d[@]}" -gt 0 ]; then for l in "${d[@]}"; do printf '           %s\n' "$l"; done; fi
+    [ -n "$note" ] && printf '           %s\n' "$note"
+    if [ -n "$prog" ] && [ "$st" != REMOVED ]; then
+      sig=$(signer "$prog")
+      printf '           signer   %s\n' "$sig"
+      risks "$prog" "$sig" | while IFS= read -r l; do printf '           %s%s%s\n' "$r" "$l" "$x"; done
+    fi
+  done < <(changes "$1" "$2")
+  [ "$hidden" -gt 0 ] && echo "(Also watched, but they don't exist yet: $hidden files, hooks and settings.)"
+  return 0
+}
+
+count_changes() { changes "$1" "$2" | wc -l | tr -d ' '; }
+
+since() { [ -f "$ALLOW" ] && date -r "$(stat -f %m "$ALLOW")" '+%Y-%m-%d %H:%M'; }
+
 approve() {
   need_root approve
   [ -t 0 ] || die "approve needs an interactive Terminal"
   refresh
   if [ -s "$STATE/flags" ]; then
-    cat "$STATE/flags"
-    die "refusing to approve while these problems exist. Remove the item or fix the gate first."
+    echo "These problems block backups and can't be approved:"
+    local l; while IFS= read -r l; do printf '  %s\n' "$(clean "$l")"; done < "$STATE/flags"
+    die "remove the item or fix the gate first."
   fi
   if [ -f "$ALLOW" ]; then
     if diff "$ALLOW" "$STATE/current" > "$STATE/pending.diff"; then echo "No changes since the last approval."; exit 0; fi
-    echo "Changes since the last approval (< removed, > added):"
-    cat "$STATE/pending.diff"
+    echo "$(count_changes "$ALLOW" "$STATE/current") change(s) since the last approval ($(since)):"
+    echo
+    describe "$ALLOW" "$STATE/current" full
+    echo
+    echo "Approve only if every change is something you (or an update you ran) did."
   else
-    echo "No baseline yet. Full inventory:"
-    cat "$STATE/current"
+    echo "First approval. These are the programs and settings that start automatically on this Mac."
+    echo "Everything listed will be trusted from now on: approve only if you recognize it."
+    echo
+    describe /dev/null "$STATE/current" compact
   fi
-  printf '\nType APPROVE to accept this state: '
-  read -r ans
-  [ "$ans" = APPROVE ] || die "not approved, nothing changed"
+  while :; do
+    printf '\nType APPROVE to accept, RAW for the raw diff, or press Return to cancel: '
+    read -r ans
+    case "$ans" in
+      APPROVE) break ;;
+      RAW|raw) if [ -f "$ALLOW" ]; then diff "$ALLOW" "$STATE/current" | while IFS= read -r l; do clean "$l"; echo; done
+               else while IFS= read -r l; do clean "$l"; echo; done < "$STATE/current"; fi ;;
+      *) die "not approved, nothing changed" ;;
+    esac
+  done
   mkdir -p "$ETC/history"
   [ -f "$ALLOW" ] && cp -p "$ALLOW" "$ETC/history/allowlist.$(date +%Y%m%d-%H%M%S)"
   install -o root -g wheel -m 644 "$STATE/current" "$ALLOW"
@@ -303,7 +500,11 @@ status() {
   echo "Last successful backup: $([ -n "$last" ] && date -r "$last" '+%Y-%m-%d %H:%M' || echo never)"
   echo "Recent log:"; tail -n 5 "$LOG" 2>/dev/null | sed 's/^/  /'
   [ -s "$STATE/flags" ] && { echo "PROBLEMS (block backups):"; sed 's/^/  /' "$STATE/flags"; }
-  [ -s "$STATE/pending.diff" ] && { echo "Pending changes (< removed, > added):"; cat "$STATE/pending.diff"; }
+  if [ -f "$ALLOW" ] && [ -f "$STATE/current" ] && ! cmp -s "$ALLOW" "$STATE/current"; then
+    echo "Changes waiting for approval (as of the last check):"
+    describe "$ALLOW" "$STATE/current" brief | sed 's/^/  /'
+    echo "Details, signers and approval: sudo $SELF approve"
+  fi
   return 0
 }
 

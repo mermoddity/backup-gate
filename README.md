@@ -2,6 +2,10 @@
 
 **Time Machine backups that stop when your Mac might be compromised.**
 
+[Website](https://mermoddity.github.io/backup-gate/) ·
+[Why this matters](https://mermoddity.github.io/backup-gate/time-machine-malware.html) ·
+[Releases](https://github.com/mermoddity/backup-gate/releases)
+
 Time Machine keeps a limited history. If malware installs itself and goes unnoticed, every
 hourly backup copies it in, and Time Machine gradually deletes the older, clean backups to make
 room. By the time you notice, there may be no clean backup left to restore.

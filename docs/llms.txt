@@ -1,0 +1,17 @@
+# backup-gate
+
+> Free, open-source macOS tool (MIT). Time Machine backs up only when nothing that can run code at startup has changed since the user approved it. When a launch agent, login item, shell startup file, sudoers rule or similar changes, backups pause until the user reviews and approves the change, so malware that hides on the Mac can't push the last clean backup out of Time Machine's limited history.
+
+- One bash script (about 550 lines) plus a LaunchDaemon; no dependencies, no network access.
+- Requires a local Time Machine disk (USB/Thunderbolt APFS); network/NAS destinations aren't supported.
+- Install: `brew install mermoddity/backup-gate/backup-gate` (Apple silicon), then `sudo $(brew --prefix)/opt/backup-gate/libexec/install.sh`; or from a GitHub release with SHA-256 and build attestation.
+- Doesn't remove malware; malware with root can disable it; doesn't detect ransomware changing documents.
+- Complements Objective-See's BlockBlock (real-time persistence alerts) and KnockKnock (persistence scan).
+
+## Links
+
+- [Home](https://mermoddity.github.io/backup-gate/)
+- [Source and README](https://github.com/mermoddity/backup-gate)
+- [Why Time Machine can lose its last clean backup](https://mermoddity.github.io/backup-gate/time-machine-malware.html)
+- [Releases](https://github.com/mermoddity/backup-gate/releases)
+- [Security policy](https://github.com/mermoddity/backup-gate/blob/main/SECURITY.md)
